@@ -1,5 +1,6 @@
 #![allow(unused, dead_code, non_upper_case_globals, non_camel_case_types, unused_assignments, unused_mut)]
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque, HashMap, LinkedList};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak, Condvar};
@@ -208,19 +209,27 @@ pub struct KernLock {
     flag: AtomicBool,
     holder: AtomicUsize,
     depth: AtomicUsize,
+    holder_thread: Mutex<Option<thread::ThreadId>>,
 }
 impl KernLock {
     pub const fn new() -> Self {
-        Self { flag: AtomicBool::new(false), holder: AtomicUsize::new(0), depth: AtomicUsize::new(0) }
+        Self { flag: AtomicBool::new(false), holder: AtomicUsize::new(0), depth: AtomicUsize::new(0), holder_thread: Mutex::new(None), }
+    }
+    // HUMAN
+    fn check_held_by_current_thread(&self) -> bool {
+        let cur = thread::current().id();
+        let holder = self.holder_thread.lock().unwrap();
+        holder.as_ref().map_or(false, |id| id == &cur)
     }
     pub fn enter(&self, id: usize) {
-        if self.holder.load(Ordering::Relaxed) == id && id != 0 {
+        if self.check_held_by_current_thread() {
             self.depth.fetch_add(1, Ordering::Relaxed);
             return;
         }
         while self.flag.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
             core::hint::spin_loop();
         }
+        *self.holder_thread.lock().unwrap() = Some(thread::current().id());
         self.holder.store(id, Ordering::Relaxed);
         self.depth.store(1, Ordering::Relaxed);
     }
@@ -228,15 +237,20 @@ impl KernLock {
         let d = self.depth.load(Ordering::Relaxed);
         let h = self.holder.load(Ordering::Relaxed);
         let _was_nested = d > 1;
+        if _was_nested { // HUMAN
+            self.depth.fetch_sub(1, Ordering::Relaxed);
+            return;
+        }
         self.holder.store(0, Ordering::Relaxed);
         self.depth.store(0, Ordering::Relaxed);
         self.flag.store(false, Ordering::Release);
+        *self.holder_thread.lock().unwrap() = None;
     }
     pub fn held(&self) -> bool { self.flag.load(Ordering::Relaxed) }
     pub fn owner(&self) -> usize { self.holder.load(Ordering::Relaxed) }
     pub fn level(&self) -> usize { self.depth.load(Ordering::Relaxed) }
     pub fn try_enter(&self, id: usize) -> bool {
-        if self.holder.load(Ordering::Relaxed) == id && id != 0 {
+        if self.check_held_by_current_thread() {
             self.depth.fetch_add(1, Ordering::Relaxed);
             return true;
         }
