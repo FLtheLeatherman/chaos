@@ -2246,6 +2246,8 @@ impl Channel {
                     let mut wq = self.wq.q.lock().unwrap();
                     wq.push_back(thread::current());
                     drop(wq);
+                    // HUMAN
+                    self.guard.v.store(false, Ordering::Release);
                     thread::park();
                 }
             }
