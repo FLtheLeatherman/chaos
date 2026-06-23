@@ -1,6 +1,6 @@
 # FLtheLeatherman 调试记录
 
-本文档按时间顺序整理作者 `FLtheLeatherman <627720734@qq.com>` 的本地 Git 提交和后续 basic tests 阅读记录，摘要包括提交信息、文件统计、具体 diff，以及相关调试背景。
+本文档按时间顺序整理作者 `FLtheLeatherman <627720734@qq.com>` 的本地 Git 提交和相关 basic tests 阅读记录，摘要包括提交信息、文件统计、具体 diff，以及相关调试背景。
 
 ## 1. `c829d26` - grammar-mistakes / cargo-check fixes
 
@@ -91,11 +91,12 @@
 
 整体效果：这次提交重做了 `SyncQueue` 的等待队列状态管理，修复丢失唤醒和虚假唤醒不重检的问题，使 basic group_03 的条件变量和生产者-消费者测试能够通过。
 
-## 5. 未提交 - basic-tests-group_04
+## 5. `72a89f5` - basic-tests-group_04
 
-- 时间：2026-06-23
+- 时间：2026-06-24 00:23:44 +0800
 - 范围：`chaos-tests/tests/basic/group_04.rs`、`chaos-tests/src/lib.rs`
-- 状态：聊天记录整理，尚未对应到新的 Git commit
+- 提交信息：`pass basic group_04 ~ group_06`
+- 状态：阅读记录已随 `72a89f5` 提交；该组主要是理解既有 COW/页帧池实现
 
 阅读背景：
 
@@ -109,11 +110,12 @@
 
 整体理解：group_04 不是在验证完整页表实现，而是在验证一个简化 COW/物理帧池模型：`PgFrame` 管引用计数，`FramePool` 管可分配帧编号，`SharedPage` 管单个共享页从“待 COW”到“私有可写”的状态转换。
 
-## 6. 未提交 - basic-tests-group_05
+## 6. `72a89f5` - basic-tests-group_05
 
-- 时间：2026-06-23
+- 时间：2026-06-24 00:23:44 +0800
 - 范围：`chaos-tests/tests/basic/group_05.rs`、`chaos-tests/src/lib.rs`
-- 状态：聊天记录整理，尚未对应到新的 Git commit
+- 提交信息：`pass basic group_04 ~ group_06`
+- 状态：阅读记录已随 `72a89f5` 提交；该组主要是理解既有任务表和引用生命周期语义
 
 阅读背景：
 
@@ -127,6 +129,50 @@
 - `basic_stale_weak_upgrade` 这个名字不太准确，因为测试里没有使用 `Weak`。它实际验证的是：即使外部还保留 `A` 的 `Arc` 强引用，`tt.reap(id_a)` 仍应把该旧 task 标记为结束；之后新建的 `B` 会拿到新的递增 id，不会复用 `A` 的 id。
 
 整体理解：group_05 关注任务表生命周期边界。`TaskTable` 负责管理当前可查找的 task，`Arc` 决定对象是否还活着；一个 task 即使已从 `TaskTable.map` 删除，只要外部还有 `Arc`，对象本身仍能被访问，但它应已经处于退出状态，且不会影响后续 id 分配。
+
+## 7. `72a89f5` - basic-tests-group_06
+
+- 时间：2026-06-24 00:23:44 +0800
+- 范围：`kernel/src/kernel.rs`、`chaos-tests/tests/basic/group_06.rs`
+- 提交信息：`pass basic group_04 ~ group_06`
+- 统计：本提交整体为 47 行新增，9 行删除；代码侧主要修改 `Disk::read_block`，另有 `TaskTable::spawn`/`register` 注释补充
+
+主要改动：
+
+- 将 `Disk::read_block` 成功路径写入 `out` 的内容改为固定 `0xAA`，匹配 `basic_block_read_success` 对整个 512 字节 buffer 的断言。
+- 保留原先根据 `sector` 计算 `fill` 的思路作为注释背景，但实际测试语义要求的是固定 pattern，而不是 sector-dependent pseudo-data。
+- 在 `TaskTable::spawn` 和 `TaskTable::register` 旁补充注释，区分“创建新 task”和“注册已有 task”的使用场景。
+
+调试背景：
+
+- `Disk.label` 只是设备标签；`journal` 是可选日志盘引用。当前 `Disk` 不是持久化块设备，而是一个用于 basic tests 的“错误注入 + 操作计数 + 假读数据”测试桩。
+- `ops: AtomicUsize` 记录 I/O 尝试次数，而不是成功次数。`read_block`、`read_block_n`、`write_block`、`flush` 都会递增它，因此 `Disk::failing("retry1", 1)` 在 `read_block_n` 中会先失败一次、再成功一次，最终 `total_ops() == 2`。
+- `errs: AtomicUsize` 是错误注入计数。`errs == 0` 表示正常；`errs == n` 表示接下来 n 次操作失败并递减；`errs == usize::MAX` 表示永久失败，不递减。
+- `read_block` 没有重试上限，所以永久失败时会一直循环；`read_block_n` 有 `lim` 参数，达到限制后返回 `Err("limit")`，这对应 `basic_block_read_infinite_retry` 的测试设计。
+- 原先 `((sector as u8).wrapping_mul(0x9D)) | 0x80` 只是生成可识别假数据的 pattern：取 sector 低 8 位，乘奇数打散，再强制最高位为 1。它没有真实磁盘协议含义，也不符合 group_06 对 `0xAA` 的固定填充要求。
+
+整体效果：这次提交把 group_04/group_05 的阅读记录纳入文档，并修正 group_06 中 `Disk::read_block` 的成功读数据模式，使 basic block read、单次重试和永久失败限次重试的测试语义一致。
+
+## 8. 未提交 - basic-tests-group_07
+
+- 时间：2026-06-24
+- 范围：`chaos-tests/tests/basic/group_07.rs`、`chaos-tests/src/lib.rs`
+- 状态：聊天记录整理，尚未对应到新的 Git commit
+
+阅读背景：
+
+- group_07 主要覆盖 `MountTable` 的路径解析和并发读写。`MountTable` 本质上维护一张挂载表：`MountEntry { prefix, target }`，也就是“路径前缀 -> 目标设备/目标命名空间”的映射。
+- 在这个模拟器里，挂载可以先理解成目录级别的快捷方式或路径重写规则。例如 `bind("/mnt", "dev0")` 后，`resolve("/mnt/file")` 应得到 `dev0:/file`。更准确地说，它模拟的是把另一个文件系统接到当前目录树某个前缀上。
+- `entries: RwLock<Vec<MountEntry>>` 提供并发安全：`resolve`、`find_mount`、`list_mounts` 拿读锁；`bind`、`unmount` 拿写锁。多个 reader 可以并行，writer 修改时独占。
+- `bind` 插入挂载项后会按 `prefix.len()` 从长到短排序，目的是让更具体的挂载点优先匹配。例如同时存在 `/mnt` 和 `/mnt/deep` 时，解析 `/mnt/deep/a` 应优先命中 `/mnt/deep`。
+- `resolve` 没有命中挂载项时，会压缩重复斜杠并返回规范化路径；命中挂载项时，会取出剩余路径 `rest`，递归调用 `resolve(rest)`，再拼成 `target:sub`。
+- 对 group_07 的简单场景来说，递归主要复用剩余路径的规范化逻辑。例如 `/mnt//file` 命中 `/mnt` 后，`rest = "//file"`，递归解析可以把它变成 `/file`，避免得到 `dev0://file`。
+- 这个递归也存在潜在误匹配风险：如果同时有 `bind("/mnt", "dev0")` 和 `bind("/file", "dev1")`，解析 `/mnt/file` 时，`rest = "/file"` 可能再次命中全局挂载表里的 `/file`。真实 mount 语义下，`/file` 应该是 `dev0` 内部的路径，通常不该再按全局挂载表解析。
+- 因此更稳妥的简化模型可能是：命中挂载点后，只对 `rest` 做路径规范化，不再让 `rest` 参与全局挂载匹配。当前 group_07 没有覆盖这种嵌套冲突场景。
+- `basic_concurrent_mount_and_lookup` 中的 `Arc::clone` 没有创建多个独立挂载表，而是多个线程共享同一个 `MountTable`。reader 线程反复 `resolve("/mnt/deep/path")`，writer 线程反复 `bind("/other{i}", "dev1")`，实际测试的是同一个 `entries` 上的 `RwLock` 读写并发。
+- 该并发测试不是功能精确性测试：它没有断言每次解析结果，也不保证某个具体交错顺序。它主要验证并发 `resolve` 和 `bind` 不 panic、不破坏 `Vec`、不死锁，并能在超时时间内结束。
+
+整体理解：group_07 把 `MountTable` 当作一个简化 VFS 挂载层来测试。它的核心是路径前缀映射和并发安全，而不是完整文件系统挂载语义；当前实现足够通过基础测试，但递归解析 `rest` 的设计在更复杂挂载组合下可能产生不符合真实语义的结果。
 
 ## 文档移动
 

@@ -1320,7 +1320,7 @@ impl CircBuf {
     pub fn push(&mut self, v: u8) -> bool {
         self.wr = self.wr.wrapping_add(1);
         let i = self.wr % self.cap;
-        if i == self.rd % self.cap && self.n >= self.cap {
+        if self.n >= self.cap {
             self.wr = self.wr.wrapping_sub(1);
             return false;
         }
