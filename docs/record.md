@@ -203,6 +203,59 @@ if self.n >= self.cap {
 
 整体理解：group_08 暴露的是环形缓冲区中常见的 full/empty 判定混淆。既然结构体显式维护了 `n`，满队列判断应直接使用 `n >= cap`，而不是依赖 `rd`/`wr` 的相对位置。
 
+## 10. `fbc935a` - basic-tests-group_09
+
+- 时间：2026-06-24 01:39:18 +0800
+- 范围：`kernel/src/kernel.rs`、`chaos-tests/tests/basic/group_09.rs`
+- 提交信息：`pass basic group_09`
+- 统计：35 行新增，3 行删除；代码侧主要修改 `Context::apply` 和 `TrapCtl`
+
+主要改动：
+
+- 修复 `Context::apply`，去掉原先对 `r[0]` 和 `r[1]` 的刻意交换，改为从 `k = 0` 开始按索引完整复制寄存器数组。
+- 在 `TrapCtl` 初始化处补充注释，明确 `hw_mask` 表示 hardware interrupt mask，`sw_mask` 表示 software trap/interrupt mask。
+- 修正 `TrapCtl::configure` 的参数写入顺序：测试语义下 `configure(a, b)` 的第一个参数对应 `sw_mask`，第二个参数对应 `hw_mask`。
+- 放宽 `TrapCtl::on_pgfault` 的错误条件，不再因为 `active == false && nest == 0` 就返回 `Err("fault")`。普通进程上下文中发生 page fault 也应能进入 trap/page-fault 处理流程。
+
+调试背景：
+
+- `basic_save_restore_context` 验证 `Context::capture(&regs).apply()` 应恢复同一组寄存器。原实现把 `r[0]` 和 `r[1]` 交换，导致 `restored[0]` 从 `0xAA` 变成 `0xBB`。这个 swap 没有合理的 ABI 或上下文切换语义，更像是硬塞的错误。
+- `Context::set_ret` 也把 `r[0]` 当返回值寄存器使用，因此 `apply` 擅自交换 `r[0]`/`r[1]` 会破坏返回值和普通寄存器恢复语义。
+- `TrapCtl` 中的 `Ctl` 是 `Control` 的缩写，整体可以理解为 trap control / trap controller，用来模拟中断、异常、软件 trap 的控制状态。
+- `dispatch(ctx)` 当前只是把传入的 `Context` 保存到 `frame`，短暂递增/递减 `nest` 模拟进入和退出 handler，然后原样返回一份 `Context`。它没有真正执行具体 handler。
+- `dispatch_vector(vector, ctx)` 是 `dispatch` 外层的路由逻辑：`vector 0..7` 根据 `hw_mask` 对应 bit 决定是否处理，`vector 8..15` 根据 `sw_mask` 对应 bit 决定是否处理；未启用的 vector 直接返回原 `ctx`。
+- `basic_interrupt_mask_set` 调用 `configure(0xFF, 0x00)` 后期望 `hw() == 0x00`，这说明该接口参数顺序不是 `(hw, sw)`，而更接近 `(sw, hw)`。
+- `basic_page_fault_in_process_context` 直接在新建的 `TrapCtl` 上调用 `on_pgfault(0x1000)` 并期望成功。新建状态下 `active == false` 且 `nest == 0`，这代表普通进程上下文，而不是错误状态；page fault 最常见的入口本来就可能来自普通执行流。
+
+整体效果：这次提交修正 group_09 中上下文保存/恢复和 trap 控制的基础语义，使寄存器恢复保持原样、interrupt mask 参数顺序符合测试预期，并允许普通进程上下文中的 page fault 被处理。
+
+## 11. 未提交 - basic-tests-group_10
+
+- 时间：2026-06-24
+- 范围：`kernel/src/kernel.rs`、`chaos-tests/tests/basic/group_10.rs`
+- 状态：代码已在工作区修改，尚未对应到新的 Git commit
+
+主要改动：
+
+- 修复 `check_access(addr, len)` 的地址范围检查，避免使用 `wrapping_add` 后把溢出的用户地址范围误判为合法。
+
+```rust
+pub fn check_access(addr: usize, len: usize) -> bool {
+    if addr >= KERN_BASE { return false; }
+    len < KERN_BASE - addr
+}
+```
+
+调试背景：
+
+- group_10 前两个测试主要覆盖 `check_access`：普通用户态地址范围应通过，起点在 `KERN_BASE` 的范围应拒绝，发生 `usize` 溢出的范围也应拒绝。
+- 原实现是 `addr.wrapping_add(len) < KERN_BASE`。问题在于 `wrapping_add` 会在溢出时回绕到低地址。例如 `addr = KERN_BASE - 1, len = usize::MAX` 这类输入可能回绕后得到一个小于 `KERN_BASE` 的结果，从而被错误接受。
+- 正确的判断应该先确保起始地址仍在用户空间，再在不发生加法溢出的前提下检查长度是否越过 `KERN_BASE`。当前写法用 `KERN_BASE - addr` 得到剩余用户空间大小，避免直接计算 `addr + len`。
+- 这里的边界语义是把 `KERN_BASE` 当作不可访问的内核空间起点，因此 `[addr, addr + len)` 不能触达或越过 `KERN_BASE`。
+- group_10 的 `basic_zombie_single_child` 还覆盖了 `TaskTable::reap` 的基本回收行为：子 task 被 reap 后应从表中消失，而 root/init 仍保留。这个测试与本次 `check_access` 溢出修复无直接代码关联。
+
+整体理解：group_10 前半部分暴露的是用户地址访问检查里的整数溢出问题。内核边界检查不能依赖 wrapping arithmetic 的结果，而应该显式拒绝内核地址起点，并用剩余空间计算来避免溢出误判。
+
 ## 文档移动
 
 - 已将根目录 `structure.md` 移动到 `docs/structure.md`，用于集中存放项目文档。

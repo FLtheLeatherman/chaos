@@ -1218,7 +1218,8 @@ impl Drop for KStk {
 }
 
 pub fn check_access(addr: usize, len: usize) -> bool {
-    addr.wrapping_add(len) < KERN_BASE
+    if addr >= KERN_BASE { return false; }
+    len < KERN_BASE - addr
 }
 
 pub fn check_access_rw(addr: usize, len: usize, writable: bool) -> bool {
