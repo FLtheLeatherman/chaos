@@ -153,11 +153,12 @@
 
 整体效果：这次提交把 group_04/group_05 的阅读记录纳入文档，并修正 group_06 中 `Disk::read_block` 的成功读数据模式，使 basic block read、单次重试和永久失败限次重试的测试语义一致。
 
-## 8. 未提交 - basic-tests-group_07
+## 8. `5f739ea` - basic-tests-group_07
 
-- 时间：2026-06-24
+- 时间：2026-06-24 01:04:04 +0800
 - 范围：`chaos-tests/tests/basic/group_07.rs`、`chaos-tests/src/lib.rs`
-- 状态：聊天记录整理，尚未对应到新的 Git commit
+- 提交信息：`pass basic group_07 ~ 08`
+- 状态：阅读记录已随 `5f739ea` 提交；该组主要是理解既有挂载表实现
 
 阅读背景：
 
@@ -173,6 +174,34 @@
 - 该并发测试不是功能精确性测试：它没有断言每次解析结果，也不保证某个具体交错顺序。它主要验证并发 `resolve` 和 `bind` 不 panic、不破坏 `Vec`、不死锁，并能在超时时间内结束。
 
 整体理解：group_07 把 `MountTable` 当作一个简化 VFS 挂载层来测试。它的核心是路径前缀映射和并发安全，而不是完整文件系统挂载语义；当前实现足够通过基础测试，但递归解析 `rest` 的设计在更复杂挂载组合下可能产生不符合真实语义的结果。
+
+## 9. `5f739ea` - basic-tests-group_08
+
+- 时间：2026-06-24 01:04:04 +0800
+- 范围：`kernel/src/kernel.rs`、`chaos-tests/tests/basic/group_08.rs`
+- 提交信息：`pass basic group_07 ~ 08`
+- 状态：代码修复已随 `5f739ea` 提交；本段为提交后的阅读记录补充
+
+主要改动：
+
+- 修复 `CircBuf::push` 的满队列判定，把原来的组合条件改成只根据元素数量判断：
+
+```rust
+if self.n >= self.cap {
+    self.wr = self.wr.wrapping_sub(1);
+    return false;
+}
+```
+
+调试背景：
+
+- group_08 主要覆盖环形缓冲区的写入读取、满队列拒绝、以及 wrap-around 后继续读写的行为。
+- 原条件是 `if i == self.rd % self.cap && self.n >= self.cap`。这个条件混合了写入槽位位置和元素数量，只有在写指针计算出的槽位正好追上读指针时才拒绝写入。
+- 但这个实现已经有 `n` 记录当前元素数量，也有 `full() == self.n >= self.cap`。因此 full/empty 状态应由 `n` 判断，`rd` 和 `wr` 只负责定位读写槽位。
+- 如果 buffer 已满后继续调用 `push`，`wr` 会先前进，新的 `i` 不一定等于 `rd % cap`。旧条件就可能漏掉满队列状态，继续写入并导致 `n > cap`，破坏容量约束。
+- `basic_ring_full_reject` 正好验证容量为 4 的缓冲区在写入 4 个元素后，第 5 次 `push` 必须返回 `false`，且不能继续增加长度。
+
+整体理解：group_08 暴露的是环形缓冲区中常见的 full/empty 判定混淆。既然结构体显式维护了 `n`，满队列判断应直接使用 `n >= cap`，而不是依赖 `rd`/`wr` 的相对位置。
 
 ## 文档移动
 
