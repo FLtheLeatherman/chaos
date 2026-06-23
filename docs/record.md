@@ -229,11 +229,12 @@ if self.n >= self.cap {
 
 整体效果：这次提交修正 group_09 中上下文保存/恢复和 trap 控制的基础语义，使寄存器恢复保持原样、interrupt mask 参数顺序符合测试预期，并允许普通进程上下文中的 page fault 被处理。
 
-## 11. 未提交 - basic-tests-group_10
+## 11. `757999e` - basic-tests-group_10
 
-- 时间：2026-06-24
+- 时间：2026-06-24 01:45:35 +0800
 - 范围：`kernel/src/kernel.rs`、`chaos-tests/tests/basic/group_10.rs`
-- 状态：代码已在工作区修改，尚未对应到新的 Git commit
+- 提交信息：`pass basic group_10`
+- 统计：53 行新增；代码侧主要修改 `check_access`
 
 主要改动：
 
