@@ -1,8 +1,8 @@
-# FLtheLeatherman 提交记录
+# FLtheLeatherman 调试记录
 
-本文档按时间顺序整理作者 `FLtheLeatherman <627720734@qq.com>` 的 4 次本地 Git 提交，摘要包括提交信息、文件统计、具体 diff，以及相关调试背景。
+本文档按时间顺序整理作者 `FLtheLeatherman <627720734@qq.com>` 的本地 Git 提交和后续 basic tests 阅读记录，摘要包括提交信息、文件统计、具体 diff，以及相关调试背景。
 
-## 1. `c829d26` - fix: cargo check passed
+## 1. `c829d26` - grammar-mistakes / cargo-check fixes
 
 - 时间：2026-05-25 22:00:35 +0800
 - 范围：`kernel/src/kernel.rs`
@@ -22,7 +22,7 @@
 
 调试背景：这次提交更像是进入测试驱动修复之前的一次基础编译修正，主要目标是先消除编译层面的类型、借用和结构初始化问题。
 
-## 2. `43a23a7` - pass basic group_01
+## 2. `43a23a7` - basic-tests-group_01
 
 - 时间：2026-06-11 15:30:59 +0800
 - 范围：`kernel/src/kernel.rs`、`structure.md`
@@ -45,7 +45,7 @@
 
 整体效果：这次提交主要修复全局内核锁的可重入和释放语义，使 basic group_01 中关于 BKL 单次进入、重复进入和跨模块锁顺序的测试能够通过。
 
-## 3. `8e92e9a` - pass basic group_02
+## 3. `8e92e9a` - basic-tests-group_02
 
 - 时间：2026-06-11 17:25:15 +0800
 - 范围：`kernel/src/kernel.rs`
@@ -65,7 +65,7 @@
 
 整体效果：这次提交聚焦 `Channel` 的阻塞接收路径，修复“睡眠时持有自旋锁”的问题，使 basic group_02 中自旋锁保护、阻塞等待和持锁时长相关测试能够通过。
 
-## 4. `2ce30e3` - pass basic group_03
+## 4. `2ce30e3` - basic-tests-group_03
 
 - 时间：2026-06-11 22:37:38 +0800
 - 范围：`kernel/src/kernel.rs`
@@ -90,6 +90,43 @@
 - 这次修改还留下两个边界问题：`broadcast()` 空队列时是否也应产生 wake credit，取决于预期语义；`signal_n` 的 `None` 分支在 `to_wake <= avail` 时基本不可达，写成 `break` 更贴近实际。
 
 整体效果：这次提交重做了 `SyncQueue` 的等待队列状态管理，修复丢失唤醒和虚假唤醒不重检的问题，使 basic group_03 的条件变量和生产者-消费者测试能够通过。
+
+## 5. 未提交 - basic-tests-group_04
+
+- 时间：2026-06-23
+- 范围：`chaos-tests/tests/basic/group_04.rs`、`chaos-tests/src/lib.rs`
+- 状态：聊天记录整理，尚未对应到新的 Git commit
+
+阅读背景：
+
+- group_04 主要覆盖 `PgFrame` 引用计数、并发递增，以及 `SharedPage::fault` 触发 COW 后从 `FramePool` 分配新帧并递减源页引用计数的行为。
+- `PgFrame` 这个名字有一定误导性。它不是完整的 page-table entry，也不是真正的物理页帧对象；当前实现里它只有 `rc: AtomicUsize`，更像是 COW 页的引用计数元数据。
+- `AddrSpace.cow_pages: Mutex<BTreeMap<usize, PgFrame>>` 中，key 是页对齐后的虚拟地址，value 是该虚拟页对应的 COW 共享计数。`fork_from` 增加计数，`handle_cow_fault` 在 `rc > 1` 时分配新页并降低旧计数，`unmap_range` 移除页时降低计数。
+- `FramePool` 是模拟物理页帧池。`slots: Mutex<Vec<bool>>` 是帧占用表：`true` 表示空闲，`false` 表示已分配；`get_inner` 找到第一个空闲 slot 后置为 `false`，`put` 则把指定 slot 置回 `true`。
+- `SharedPage` 表示一个共享/COW 页的映射状态。`frame` 是当前物理帧编号，也就是 `FramePool.slots` 的 index；`pending` 表示 COW fault 是否尚未处理；`w` 表示 COW 处理后该页是否已经可写。
+- `SharedPage::fault` 的状态变化是：初始 `pending = true, w = false`；写 fault 时分配新 frame，减少源 `PgFrame` 的引用计数，然后设置 `w = true, pending = false`。`is_cow_resolved()` 也通过 `!pending && w` 表示 COW 已完成。
+- `let start = old_frame % s.len().max(1);` 中的 `.max(1)` 是为了保证取模除数至少为 1，避免 `FramePool` 为空时出现 `old_frame % 0` panic。若 `slots` 为空，后续 `for off in 0..s.len()` 不会进入循环，最终返回 `"oom"`。
+
+整体理解：group_04 不是在验证完整页表实现，而是在验证一个简化 COW/物理帧池模型：`PgFrame` 管引用计数，`FramePool` 管可分配帧编号，`SharedPage` 管单个共享页从“待 COW”到“私有可写”的状态转换。
+
+## 6. 未提交 - basic-tests-group_05
+
+- 时间：2026-06-23
+- 范围：`chaos-tests/tests/basic/group_05.rs`、`chaos-tests/src/lib.rs`
+- 状态：聊天记录整理，尚未对应到新的 Git commit
+
+阅读背景：
+
+- group_05 主要覆盖 `TaskTable` 的创建/回收、`Arc`/`Weak` 生命周期，以及旧 task 引用被保留时新 task id 仍然递增生成的行为。
+- `TaskTable.map` 是 `id -> Arc<Task>` 的任务表；`root` 保存 init/root task，理论上对应 tag 为 `"init"` 的任务。`spawn_root()` 调用 `spawn("init")`，因为 `seq` 初始值是 1，所以 root/init 的 id 正好是 1。
+- `TaskTable.seq: AtomicUsize` 是 task/thread id 的递增分配器，不是调度顺序，也不是当前活跃任务数。`spawn`、`fork_task`、`clone_thread` 都通过 `fetch_add` 从同一个 `seq` 获取新 id，因此它更接近 `next_tid_or_task_id`。
+- `reap(id)` 更像“回收/摘除一个已经退出的 task”，而不是完整 kill 流程。它会把目标 task 的 `status` 设为 `Some(0)`，将其子 task 从 `subtasks` 中取出并 reparent 到 root/init，最后从 `TaskTable.map` 中移除目标 task。
+- 真正关闭 fd、清空 threads、设置 exit code 的逻辑在 `Task::exit_proc()` 中；`terminate_and_collect()` 是先调用 `exit_proc(code)`，再调用 `reap(id)`。
+- `Arc<T>` 是强引用，只要还有一个 `Arc` 活着，`T` 就不会被释放；`Weak<T>` 是弱引用，不增加强引用计数，也不会阻止对象释放。`Weak::upgrade()` 返回 `Option<Arc<T>>`，对象还活着则为 `Some`，否则为 `None`。
+- `basic_weak_ref_after_drop` 验证的是：`Arc::downgrade(&task)` 得到的 `Weak<Task>` 不会延长 `Task` 生命周期；当唯一强引用被 `drop` 后，`weak.upgrade()` 应返回 `None`。
+- `basic_stale_weak_upgrade` 这个名字不太准确，因为测试里没有使用 `Weak`。它实际验证的是：即使外部还保留 `A` 的 `Arc` 强引用，`tt.reap(id_a)` 仍应把该旧 task 标记为结束；之后新建的 `B` 会拿到新的递增 id，不会复用 `A` 的 id。
+
+整体理解：group_05 关注任务表生命周期边界。`TaskTable` 负责管理当前可查找的 task，`Arc` 决定对象是否还活着；一个 task 即使已从 `TaskTable.map` 删除，只要外部还有 `Arc`，对象本身仍能被访问，但它应已经处于退出状态，且不会影响后续 id 分配。
 
 ## 文档移动
 

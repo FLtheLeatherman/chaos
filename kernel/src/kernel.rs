@@ -3106,7 +3106,8 @@ impl Disk {
             if rem == 0 {
                 let fill = ((sector as u8).wrapping_mul(0x9D)) | 0x80;
                 let mut i = 0;
-                while i < buf_len { out[i] = fill.wrapping_add(i as u8); i += 1; }
+                // while i < buf_len { out[i] = fill.wrapping_add(i as u8); i += 1; }
+                while i < buf_len { out[i] = 0xAA; i += 1; }
                 return Ok(());
             }
             let persistent = rem == usize::MAX;
@@ -4450,7 +4451,7 @@ impl TaskTable {
     pub fn new() -> Self {
         Self { map: RwLock::new(BTreeMap::new()), seq: AtomicUsize::new(1), root: Mutex::new(None) }
     }
-    pub fn spawn(&self, tag: &str) -> Arc<Task> {
+    pub fn spawn(&self, tag: &str) -> Arc<Task> { // 还没有的 task
         let id = self.seq.fetch_add(1, Ordering::SeqCst);
         let t = Task::make(id, tag);
         self.map.write().unwrap().insert(id, t.clone());
@@ -4477,7 +4478,7 @@ impl TaskTable {
             .filter(|t| *t.pgid.lock().unwrap() == pgid)
             .cloned().collect()
     }
-    pub fn register(&self, task: &Arc<Task>, pid: Pid) {
+    pub fn register(&self, task: &Arc<Task>, pid: Pid) { // 已经有的 task
         *task.pid.lock().unwrap() = pid.clone();
         self.map.write().unwrap().insert(pid.get(), task.clone());
     }
