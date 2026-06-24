@@ -12,6 +12,7 @@ fn run_with_timeout<F: FnOnce() + Send + 'static>(f: F, ms: u64) -> bool {
 
 #[test]
 fn nested_scheduler_fs_memory_chain_keeps_outer_gkl() {
+    let _guard = crate::support::gkl_test_guard();
     let ok = run_with_timeout(
         move || {
             let kernel = Kernel::new(16);
@@ -38,6 +39,7 @@ fn nested_scheduler_fs_memory_chain_keeps_outer_gkl() {
 
 #[test]
 fn try_enter_records_thread_for_reentrant_enter() {
+    let _guard = crate::support::gkl_test_guard();
     let ok = run_with_timeout(
         move || {
             assert!(GKL.try_enter(7101));
