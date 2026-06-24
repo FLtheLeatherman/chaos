@@ -13,6 +13,10 @@ name = "basic"
 path = "tests/basic/main.rs"
 
 [[test]]
+name = "custom"
+path = "tests/custom/main.rs"
+
+[[test]]
 name = "advanced"
 path = "tests/advanced/main.rs"
 
