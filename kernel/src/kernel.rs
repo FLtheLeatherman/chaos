@@ -1113,9 +1113,13 @@ impl FramePool {
         Self { slots: Mutex::new(vec![true; n]), cap: n }
     }
     pub fn get(&self, id: usize) -> Option<usize> {
+        chaos_log("gkl", || format!("FramePool::get begin id={}", id)); // AGENT
         GKL.enter(id);
+        chaos_log("gkl", || format!("FramePool::get acquired id={} depth={}", id, GKL.level())); // AGENT
         let r = self.get_inner();
+        chaos_log("gkl", || format!("FramePool::get before_leave id={} result={:?}", id, r)); // AGENT
         GKL.leave();
+        chaos_log("gkl", || format!("FramePool::get done id={} held={} owner={} depth={}", id, GKL.held(), GKL.owner(), GKL.level())); // AGENT
         r
     }
     pub fn get_inner(&self) -> Option<usize> {
@@ -2903,12 +2907,22 @@ impl BlockCache {
         Some(result)
     }
     pub fn sync_all(&self, id: usize) {
+        chaos_log("gkl", || format!("BlockCache::sync_all begin id={} chains={}", id, self.chains.len())); // AGENT
         GKL.enter(id);
+        chaos_log("gkl", || format!("BlockCache::sync_all acquired id={} depth={}", id, GKL.level())); // AGENT
         let mut synced = 0usize;
         for chain_idx in 0..self.chains.len() {
             let ch = &self.chains[chain_idx];
+            let mut waited = false;
             while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+                if !waited {
+                    chaos_log("gkl", || format!("BlockCache::sync_all wait cache_chain id={} ci={}", id, chain_idx)); // AGENT
+                    waited = true;
+                }
                 core::hint::spin_loop();
+            }
+            if waited {
+                chaos_log("gkl", || format!("BlockCache::sync_all acquired cache_chain id={} ci={}", id, chain_idx)); // AGENT
             }
             {
                 let mut items = ch.items.lock().unwrap();
@@ -2921,7 +2935,9 @@ impl BlockCache {
             }
             ch.lk.v.store(false, Ordering::Release);
         }
+        chaos_log("gkl", || format!("BlockCache::sync_all before_leave id={} synced={}", id, synced)); // AGENT
         GKL.leave();
+        chaos_log("gkl", || format!("BlockCache::sync_all done id={} held={} owner={} depth={}", id, GKL.held(), GKL.owner(), GKL.level())); // AGENT
     }
 
     pub fn invalidate(&self, k: usize) {
@@ -4839,7 +4855,9 @@ impl Kernel {
         }
     }
     pub fn tick(&self, id: usize) {
+        chaos_log("gkl", || format!("Kernel::tick begin id={} chains={}", id, self.cache.chains.len())); // AGENT
         GKL.enter(id);
+        chaos_log("gkl", || format!("Kernel::tick acquired id={} depth={}", id, GKL.level())); // AGENT
         let _ir = {
             let cg = self.cpus.lock().unwrap();
             let mut occ = 0u32;
@@ -4853,12 +4871,24 @@ impl Kernel {
         {
             for ci in 0..self.cache.chains.len() {
                 let ch = &self.cache.chains[ci];
-                while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() { core::hint::spin_loop(); }
+                let mut waited = false;
+                while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+                    if !waited {
+                        chaos_log("gkl", || format!("Kernel::tick wait cache_chain id={} ci={}", id, ci)); // AGENT
+                        waited = true;
+                    }
+                    core::hint::spin_loop();
+                }
+                if waited {
+                    chaos_log("gkl", || format!("Kernel::tick acquired cache_chain id={} ci={}", id, ci)); // AGENT
+                }
                 { let mut items = ch.items.lock().unwrap(); for s in items.iter_mut() { s.modified = false; } }
                 ch.lk.v.store(false, Ordering::Release);
             }
         }
+        chaos_log("gkl", || format!("Kernel::tick before_leave id={}", id)); // AGENT
         GKL.leave();
+        chaos_log("gkl", || format!("Kernel::tick done id={} held={} owner={} depth={}", id, GKL.held(), GKL.owner(), GKL.level())); // AGENT
     }
     pub fn cur_task(&self, cpu: usize) -> Option<Arc<Task>> {
         let cg = self.cpus.lock().unwrap();
