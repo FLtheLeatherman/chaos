@@ -4,6 +4,7 @@ target
 /kernel/src/arch/mipsel/boot/linker.ld
 *.gen.s
 *.dtb
+/chaos-tests/tests/advanced
 
 Cargo.lock
 !kernel/Cargo.lock

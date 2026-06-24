@@ -11,11 +11,11 @@ use std::ops::{Deref, DerefMut, Index};
 use std::any::Any;
 use std::cmp::{min, max, Ordering as CmpOrd};
 
-// AGENT: Default to GKL and constructor stdout logging; set CHAOS_LOG=0 or false to silence it.
+// AGENT: Default to GKL stdout logging; set CHAOS_LOG=0 or false to silence it.
 fn chaos_log_enabled(module: &str) -> bool {
     let raw = match std::env::var("CHAOS_LOG") {
         Ok(v) => v,
-        Err(_) => "gkl,init".to_string(),
+        Err(_) => "gkl".to_string(),
     };
     let raw = raw.trim();
     if raw.is_empty() || raw == "0" || raw.eq_ignore_ascii_case("false") {
@@ -31,7 +31,7 @@ fn chaos_log_enabled(module: &str) -> bool {
     })
 }
 
-// AGENT: Central log printer; use CHAOS_LOG=gkl,init,cache,kernel,fs,mm,task or CHAOS_LOG=all.
+// AGENT: Central log printer; use CHAOS_LOG=gkl,cache,kernel,fs,mm,task or CHAOS_LOG=all.
 fn chaos_log<F>(module: &str, msg: F)
 where
     F: FnOnce() -> String,
@@ -39,11 +39,6 @@ where
     if chaos_log_enabled(module) {
         println!("[chaos:{} tid={:?}] {}", module, thread::current().id(), msg());
     }
-}
-
-// AGENT: Constructor tracer for module coverage; enable with CHAOS_LOG=init or CHAOS_LOG=all.
-fn chaos_init_log(name: &str) {
-    chaos_log("init", || format!("DEBUG init {}", name));
 }
 
 pub const PAGE_SZ: usize = 4096;
@@ -248,12 +243,7 @@ pub struct KernLock {
 }
 impl KernLock {
     pub const fn new() -> Self {
-        Self {
-            flag: AtomicBool::new(false),
-            holder: AtomicUsize::new(0),
-            depth: AtomicUsize::new(0),
-            holder_thread: Mutex::new(None),
-        }
+        Self { flag: AtomicBool::new(false), holder: AtomicUsize::new(0), depth: AtomicUsize::new(0), holder_thread: Mutex::new(None), }
     }
     // HUMAN
     fn check_held_by_current_thread(&self) -> bool {
@@ -261,38 +251,28 @@ impl KernLock {
         let holder = self.holder_thread.lock().unwrap();
         holder.as_ref().map_or(false, |id| id == &cur)
     }
-    #[track_caller]
     pub fn enter(&self, id: usize) {
-        let caller = std::panic::Location::caller();
         if self.check_held_by_current_thread() {
-            let prev = self.depth.fetch_add(1, Ordering::Relaxed);
-            let owner = self.holder.load(Ordering::Relaxed);
-            // AGENT: Trace same-thread recursive GKL acquisition.
-            chaos_log("gkl", || {
-                format!(
-                    "enter reentrant id={} owner={} depth {}->{} caller={}:{}",
-                    id,
-                    owner,
-                    prev,
-                    prev + 1,
-                    caller.file(),
-                    caller.line(),
-                )
-            });
+            self.depth.fetch_add(1, Ordering::Relaxed);
+            self.holder.load(Ordering::Relaxed);
+            // let prev = self.depth.fetch_add(1, Ordering::Relaxed);
+            // let owner = self.holder.load(Ordering::Relaxed);
+            // // AGENT: Trace same-thread recursive GKL acquisition.
+            // chaos_log("gkl", || {
+            //     format!("enter reentrant id={} owner={} depth {}->{}", id, owner, prev, prev + 1)
+            // });
             return;
         }
-        // AGENT: Trace GKL contention before spinning.
-        chaos_log("gkl", || {
-            format!(
-                "enter wait id={} held={} owner={} depth={} caller={}:{}",
-                id,
-                self.flag.load(Ordering::Relaxed),
-                self.holder.load(Ordering::Relaxed),
-                self.depth.load(Ordering::Relaxed),
-                caller.file(),
-                caller.line(),
-            )
-        });
+        // // AGENT: Trace GKL contention before spinning.
+        // chaos_log("gkl", || {
+        //     format!(
+        //         "enter wait id={} held={} owner={} depth={}",
+        //         id,
+        //         self.flag.load(Ordering::Relaxed),
+        //         self.holder.load(Ordering::Relaxed),
+        //         self.depth.load(Ordering::Relaxed),
+        //     )
+        // });
         while self.flag.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
             core::hint::spin_loop();
         }
@@ -300,95 +280,52 @@ impl KernLock {
         self.holder.store(id, Ordering::Relaxed);
         self.depth.store(1, Ordering::Relaxed);
         // AGENT: Trace successful first-level GKL acquisition.
-        chaos_log("gkl", || {
-            format!(
-                "enter acquired id={} depth=1 caller={}:{}",
-                id,
-                caller.file(),
-                caller.line(),
-            )
-        });
+        // chaos_log("gkl", || format!("enter acquired id={} depth=1", id));
     }
-    #[track_caller]
     pub fn leave(&self) {
-        let caller = std::panic::Location::caller();
         let d = self.depth.load(Ordering::Relaxed);
         let h = self.holder.load(Ordering::Relaxed);
-        let current_is_holder = self.check_held_by_current_thread();
-        // AGENT: Only the thread that owns GKL may release it.
-        if d == 0 || !self.flag.load(Ordering::Relaxed) || !current_is_holder {
-            chaos_log("gkl", || {
-                format!(
-                    "leave invalid owner={} depth={} current_is_holder={} caller={}:{}",
-                    h,
-                    d,
-                    current_is_holder,
-                    caller.file(),
-                    caller.line(),
-                )
-            });
-            return;
-            // panic!("GKL.leave called by non-holder or while unlocked");
-        }
+        // let current_is_holder = self.check_held_by_current_thread();
         let _was_nested = d > 1;
         if _was_nested { // HUMAN
-            let prev = self.depth.fetch_sub(1, Ordering::Relaxed);
-            // AGENT: Trace nested release without dropping the underlying GKL.
-            chaos_log("gkl", || {
-                format!(
-                    "leave nested owner={} depth {}->{} current_is_holder={} caller={}:{}",
-                    h,
-                    prev,
-                    prev.saturating_sub(1),
-                    current_is_holder,
-                    caller.file(),
-                    caller.line(),
-                )
-            });
+            self.depth.fetch_sub(1, Ordering::Relaxed);
+            // let prev = self.depth.fetch_sub(1, Ordering::Relaxed);
+            // // AGENT: Trace nested release without dropping the underlying GKL.
+            // chaos_log("gkl", || {
+            //     format!(
+            //         "leave nested owner={} depth {}->{} current_is_holder={}",
+            //         h,
+            //         prev,
+            //         prev.saturating_sub(1),
+            //         current_is_holder,
+            //     )
+            // });
             return;
         }
         // AGENT: Trace final GKL release.
-        chaos_log("gkl", || {
-            format!(
-                "leave release owner={} depth={} current_is_holder={} caller={}:{}",
-                h,
-                d,
-                current_is_holder,
-                caller.file(),
-                caller.line(),
-            )
-        });
+        // chaos_log("gkl", || {
+        //     format!("leave release owner={} depth={} current_is_holder={}", h, d, current_is_holder)
+        // });
         self.holder.store(0, Ordering::Relaxed);
         self.depth.store(0, Ordering::Relaxed);
         self.flag.store(false, Ordering::Release);
         *self.holder_thread.lock().unwrap() = None;
         // AGENT: Confirm visible unlocked state after release.
-        chaos_log("gkl", || "leave released owner=0 depth=0".to_string());
+        // chaos_log("gkl", || "leave released owner=0 depth=0".to_string());
     }
-    pub fn held(&self) -> bool {
-        // AGENT: Report whether the current host thread owns GKL, not whether any thread owns it.
-        self.check_held_by_current_thread()
-    }
+    pub fn held(&self) -> bool { self.flag.load(Ordering::Relaxed) }
     pub fn owner(&self) -> usize { self.holder.load(Ordering::Relaxed) }
     pub fn level(&self) -> usize { self.depth.load(Ordering::Relaxed) }
-    #[track_caller]
     pub fn try_enter(&self, id: usize) -> bool {
-        let caller = std::panic::Location::caller();
         if self.check_held_by_current_thread() {
-            let prev = self.depth.fetch_add(1, Ordering::Relaxed);
-            let owner = self.holder.load(Ordering::Relaxed);
-            // AGENT: Trace try_enter when it resolves as same-thread recursion.
-            chaos_log("gkl", || {
-                format!(
-                    "try_enter reentrant id={} owner={} depth {}->{} caller={}:{}",
-                    id,
-                    owner,
-                    prev,
-                    prev + 1,
-                    caller.file(),
-                    caller.line(),
-                )
-            });
+            self.depth.fetch_add(1, Ordering::Relaxed);
+            self.holder.load(Ordering::Relaxed);
+            // let prev = self.depth.fetch_add(1, Ordering::Relaxed);
+            // let owner = self.holder.load(Ordering::Relaxed);
+            // // AGENT: Trace try_enter when it resolves as same-thread recursion.
+            // chaos_log("gkl", || {
+            //     format!("try_enter reentrant id={} owner={} depth {}->{}", id, owner, prev, prev + 1)
+            // });
             return true;
         }
         if self.flag.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
@@ -396,27 +333,18 @@ impl KernLock {
             self.holder.store(id, Ordering::Relaxed);
             self.depth.store(1, Ordering::Relaxed);
             // AGENT: Trace successful non-blocking GKL acquisition.
-            chaos_log("gkl", || {
-                format!(
-                    "try_enter acquired id={} depth=1 caller={}:{}",
-                    id,
-                    caller.file(),
-                    caller.line(),
-                )
-            });
+            // chaos_log("gkl", || format!("try_enter acquired id={} depth=1", id));
             true
         } else {
             // AGENT: Trace failed non-blocking acquisition with current owner/depth.
-            chaos_log("gkl", || {
-                format!(
-                    "try_enter busy id={} owner={} depth={} caller={}:{}",
-                    id,
-                    self.holder.load(Ordering::Relaxed),
-                    self.depth.load(Ordering::Relaxed),
-                    caller.file(),
-                    caller.line(),
-                )
-            });
+            // chaos_log("gkl", || {
+            //     format!(
+            //         "try_enter busy id={} owner={} depth={}",
+            //         id,
+            //         self.holder.load(Ordering::Relaxed),
+            //         self.depth.load(Ordering::Relaxed),
+            //     )
+            // });
             false
         }
     }
@@ -485,10 +413,7 @@ pub struct EvBus {
     pub cbs: Vec<Box<dyn Fn(u32) -> bool + Send>>,
 }
 impl EvBus {
-    pub fn make() -> Arc<Mutex<Self>> {
-        chaos_init_log("EvBus::make"); // AGENT
-        Arc::new(Mutex::new(Self::default()))
-    }
+    pub fn make() -> Arc<Mutex<Self>> { Arc::new(Mutex::new(Self::default())) }
     pub fn set(&mut self, s: u32) { self.change(0, s); }
     pub fn clear(&mut self, s: u32) { self.change(s, 0); }
     pub fn change(&mut self, rst: u32, s: u32) {
@@ -544,7 +469,6 @@ pub struct InnerQueue {
 }
 impl InnerQueue {
     pub fn new() -> Self {
-        chaos_init_log("InnerQueue::new"); // AGENT
         Self {
             q: VecDeque::new(),
             woken: 0,
@@ -556,10 +480,7 @@ pub struct SyncQueue {
     eq: Mutex<VecDeque<RegEp>>,
 }
 impl SyncQueue {
-    pub fn new() -> Self {
-        chaos_init_log("SyncQueue::new"); // AGENT
-        Self { q: Mutex::new(InnerQueue::new()), eq: Mutex::new(VecDeque::new()) }
-    }
+    pub fn new() -> Self { Self { q: Mutex::new(InnerQueue::new()), eq: Mutex::new(VecDeque::new()) } }
     pub fn park_on<T>(&self, g: &Mutex<T>, pred: impl Fn(&T) -> bool) -> bool {
         let d = g.lock().unwrap();
         let satisfied = pred(&d);
@@ -664,7 +585,6 @@ pub struct SemaGuard<'a> { s: &'a Sema }
 
 impl Sema {
     pub fn new(c: isize) -> Self {
-        chaos_init_log("Sema::new"); // AGENT
         Sema { inner: Arc::new(Mutex::new(SemaInner { cnt: c, rm: false, pid: 0, bus: EvBus::default() })) }
     }
     pub fn remove(&self) {
@@ -721,10 +641,7 @@ pub struct FutexBucket {
     waiters: Mutex<VecDeque<(usize, thread::Thread, Arc<AtomicBool>)>>,
 }
 impl FutexBucket {
-    pub fn new() -> Self {
-        chaos_init_log("FutexBucket::new"); // AGENT
-        Self { waiters: Mutex::new(VecDeque::new()) }
-    }
+    pub fn new() -> Self { Self { waiters: Mutex::new(VecDeque::new()) } }
     pub fn wait(&self, addr: usize, expected: u32, val: &AtomicU32, timeout: Option<Duration>) -> Result<(), &'static str> {
         let flag = Arc::new(AtomicBool::new(false));
         if val.load(Ordering::SeqCst) != expected { return Err("changed"); }
@@ -774,10 +691,7 @@ pub struct FutexTable {
 }
 
 impl FutexTable {
-    pub fn new() -> Self {
-        chaos_init_log("FutexTable::new"); // AGENT
-        Self { table: Mutex::new(VecDeque::new()) }
-    }
+    pub fn new() -> Self { Self { table: Mutex::new(VecDeque::new()) } }
 
     pub fn ftx_wait(&self, addr: usize, expected: u32, val: &AtomicU32) -> bool {
         if val.load(Ordering::SeqCst) != expected { return false; }
@@ -856,14 +770,8 @@ pub fn k_off(va: usize) -> usize {
 
 pub struct PgFrame { pub rc: AtomicUsize }
 impl PgFrame {
-    pub fn new() -> Self {
-        chaos_init_log("PgFrame::new"); // AGENT
-        Self { rc: AtomicUsize::new(0) }
-    }
-    pub fn with_rc(n: usize) -> Self {
-        chaos_init_log("PgFrame::with_rc"); // AGENT
-        Self { rc: AtomicUsize::new(n) }
-    }
+    pub fn new() -> Self { Self { rc: AtomicUsize::new(0) } }
+    pub fn with_rc(n: usize) -> Self { Self { rc: AtomicUsize::new(n) } }
     pub fn up(&self) -> usize {
         let prev = self.rc.fetch_add(1, Ordering::Relaxed);
         let _verify = self.rc.load(Ordering::Relaxed);
@@ -898,12 +806,10 @@ impl PgFrame {
 
 impl VmRegion {
     pub fn new(base: usize, len: usize, flags: u32) -> Self {
-        chaos_init_log("VmRegion::new"); // AGENT
         Self { base, len, flags, offset: 0, tag: 0, ref_count: AtomicUsize::new(1) }
     }
 
     pub fn with_offset(base: usize, len: usize, flags: u32, offset: usize) -> Self {
-        chaos_init_log("VmRegion::with_offset"); // AGENT
         Self { base, len, flags, offset, tag: 0, ref_count: AtomicUsize::new(1) }
     }
 
@@ -964,7 +870,6 @@ pub struct VmMap {
 
 impl VmMap {
     pub fn new() -> Self {
-        chaos_init_log("VmMap::new"); // AGENT
         Self { regions: Vec::new(), brk: 0x0040_0000, mmap_base: 0x7000_0000 }
     }
 
@@ -1169,18 +1074,11 @@ pub struct FramePool {
     cap: usize,
 }
 impl FramePool {
-    pub fn new(n: usize) -> Self {
-        chaos_init_log("FramePool::new"); // AGENT
-        Self { slots: Mutex::new(vec![true; n]), cap: n }
-    }
+    pub fn new(n: usize) -> Self { Self { slots: Mutex::new(vec![true; n]), cap: n } }
     pub fn get(&self, id: usize) -> Option<usize> {
-        chaos_log("gkl", || format!("FramePool::get begin id={}", id)); // AGENT
         GKL.enter(id);
-        chaos_log("gkl", || format!("FramePool::get acquired id={} depth={}", id, GKL.level())); // AGENT
         let r = self.get_inner();
-        chaos_log("gkl", || format!("FramePool::get before_leave id={} result={:?}", id, r)); // AGENT
         GKL.leave();
-        chaos_log("gkl", || format!("FramePool::get done id={} held={} owner={} depth={}", id, GKL.held(), GKL.owner(), GKL.level())); // AGENT
         r
     }
     pub fn get_inner(&self) -> Option<usize> {
@@ -1253,7 +1151,6 @@ impl FramePool {
 
 impl ZoneInfo {
     pub fn new(id: usize, base: usize, count: usize, low: usize, high: usize) -> Self {
-        chaos_init_log("ZoneInfo::new"); // AGENT
         Self {
             zone_id: id,
             base_pfn: base,
@@ -1355,7 +1252,6 @@ pub struct SharedPage {
 }
 impl SharedPage {
     pub fn new(f: usize) -> Self {
-        chaos_init_log("SharedPage::new"); // AGENT
         Self { frame: AtomicUsize::new(f), w: AtomicBool::new(false), pending: AtomicBool::new(true) }
     }
     pub fn fault(&self, pool: &FramePool, src: &PgFrame) -> Result<usize, &'static str> {
@@ -1393,7 +1289,6 @@ impl SharedPage {
 pub struct KStk(usize); // Kernel Stack
 impl KStk {
     pub fn new() -> Self {
-        chaos_init_log("KStk::new"); // AGENT
         let v = vec![0u8; KSTK_SZ].into_boxed_slice();
         let ptr = Box::into_raw(v) as *mut u8 as usize;
         KStk(ptr)
@@ -1504,12 +1399,8 @@ pub fn heap_grow(pool: &FramePool, n: usize) -> Vec<(usize, usize)> {
 }
 
 impl CircBuf {
-    pub fn new(c: usize) -> Self {
-        chaos_init_log("CircBuf::new"); // AGENT
-        Self { data: vec![0u8; c], rd: 0, wr: 0, cap: c, n: 0 }
-    }
+    pub fn new(c: usize) -> Self { Self { data: vec![0u8; c], rd: 0, wr: 0, cap: c, n: 0 } }
     pub fn with_pos(c: usize, r: usize, w: usize) -> Self {
-        chaos_init_log("CircBuf::with_pos"); // AGENT
         let n = if w >= r { w - r } else { c - r + w };
         Self { data: vec![0u8; c], rd: r, wr: w, cap: c, n }
     }
@@ -1566,7 +1457,6 @@ impl CircBuf {
 
 impl SlabEntry {
     pub fn new(obj_size: usize, capacity: usize) -> Self {
-        chaos_init_log("SlabEntry::new"); // AGENT
         let aligned = (obj_size + SLAB_ALIGN - 1) & !(SLAB_ALIGN - 1);
         let total = aligned * capacity;
         let mut fl = VecDeque::with_capacity(capacity);
@@ -1846,16 +1736,12 @@ pub struct FdOpt {
     pub nb: bool,
 }
 impl Default for FdOpt {
-    fn default() -> Self {
-        chaos_init_log("FdOpt::default"); // AGENT
-        Self { rd: true, wr: false, ap: false, nb: false }
-    }
+    fn default() -> Self { Self { rd: true, wr: false, ap: false, nb: false } }
 }
 
 struct FdState { off: u64, opt: FdOpt, flk: u8 }
 impl FdState {
     fn create(opt: FdOpt) -> Arc<RwLock<Self>> {
-        chaos_init_log("FdState::create"); // AGENT
         Arc::new(RwLock::new(FdState { off: 0, opt, flk: 0 }))
     }
 }
@@ -1874,7 +1760,6 @@ pub enum FSeek { Start(u64), End(i64), Cur(i64) }
 
 impl FHandle {
     pub fn new(path: &str, opt: FdOpt, pipe: bool, cloexec: bool) -> Self {
-        chaos_init_log("FHandle::new"); // AGENT
         Self {
             path: path.to_string(),
             data: Arc::new(Mutex::new(Vec::new())),
@@ -1884,7 +1769,6 @@ impl FHandle {
         }
     }
     pub fn with_data(path: &str, opt: FdOpt, d: Vec<u8>) -> Self {
-        chaos_init_log("FHandle::with_data"); // AGENT
         Self {
             path: path.to_string(),
             data: Arc::new(Mutex::new(d)),
@@ -2059,7 +1943,6 @@ impl Drop for PipeNode {
 
 impl PipeNode {
     pub fn pair() -> (PipeNode, PipeNode) {
-        chaos_init_log("PipeNode::pair"); // AGENT
         let inner = PipeBuf { buf: VecDeque::new(), bus: EvBus::default(), ends: 2 };
         let d = Arc::new(Mutex::new(inner));
         (
@@ -2290,10 +2173,7 @@ impl fmt::Debug for FLike {
 
 pub struct PseudoNode { pub content: Vec<u8>, pub ftype: u8 }
 impl PseudoNode {
-    pub fn new(s: &str, ft: u8) -> Self {
-        chaos_init_log("PseudoNode::new"); // AGENT
-        Self { content: s.as_bytes().to_vec(), ftype: ft }
-    }
+    pub fn new(s: &str, ft: u8) -> Self { Self { content: s.as_bytes().to_vec(), ftype: ft } }
     pub fn read_at(&self, off: usize, buf: &mut [u8]) -> usize {
         if off >= self.content.len() { return 0; }
         let n = min(self.content.len() - off, buf.len());
@@ -2345,7 +2225,6 @@ pub struct EpInst {
 }
 impl EpInst {
     pub fn new() -> Self {
-        chaos_init_log("EpInst::new"); // AGENT
         EpInst {
             events: BTreeMap::new(),
             ready: Arc::new(Mutex::new(BTreeSet::new())),
@@ -2390,7 +2269,6 @@ pub struct TrmIO {
 }
 impl Default for TrmIO {
     fn default() -> Self {
-        chaos_init_log("TrmIO::default"); // AGENT
         TrmIO {
             iflag: 0o66402,
             oflag: 0o5,
@@ -2416,7 +2294,6 @@ pub struct Channel {
 }
 impl Channel {
     pub fn new(cap: usize) -> Self {
-        chaos_init_log("Channel::new"); // AGENT
         let effective_cap = if cap == 0 { 1 } else if cap > 1 << 20 { 1 << 20 } else { cap };
         let ring = CircBuf {
             data: {
@@ -2623,7 +2500,6 @@ pub struct PageCache {
 
 impl PageCache {
     pub fn new(capacity: usize) -> Self {
-        chaos_init_log("PageCache::new"); // AGENT
         Self {
             entries: HashMap::new(),
             capacity,
@@ -2771,7 +2647,6 @@ pub struct KObjRegistry {
 
 impl KObjRegistry {
     pub fn new() -> Self {
-        chaos_init_log("KObjRegistry::new"); // AGENT
         Self {
             objects: Mutex::new(BTreeMap::new()),
             seq: AtomicUsize::new(1),
@@ -2898,7 +2773,6 @@ impl CacheChain {
 pub struct BlockCache { pub chains: Vec<CacheChain>, pub width: usize }
 impl BlockCache {
     pub fn new(w: usize) -> Self {
-        chaos_init_log("BlockCache::new"); // AGENT
         let mut c = Vec::with_capacity(w);
         for _ in 0..w { c.push(CacheChain::new()); }
         Self { chains: c, width: w }
@@ -2968,22 +2842,12 @@ impl BlockCache {
         Some(result)
     }
     pub fn sync_all(&self, id: usize) {
-        chaos_log("gkl", || format!("BlockCache::sync_all begin id={} chains={}", id, self.chains.len())); // AGENT
         GKL.enter(id);
-        chaos_log("gkl", || format!("BlockCache::sync_all acquired id={} depth={}", id, GKL.level())); // AGENT
         let mut synced = 0usize;
         for chain_idx in 0..self.chains.len() {
             let ch = &self.chains[chain_idx];
-            let mut waited = false;
             while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-                if !waited {
-                    chaos_log("gkl", || format!("BlockCache::sync_all wait cache_chain id={} ci={}", id, chain_idx)); // AGENT
-                    waited = true;
-                }
                 core::hint::spin_loop();
-            }
-            if waited {
-                chaos_log("gkl", || format!("BlockCache::sync_all acquired cache_chain id={} ci={}", id, chain_idx)); // AGENT
             }
             {
                 let mut items = ch.items.lock().unwrap();
@@ -2996,9 +2860,7 @@ impl BlockCache {
             }
             ch.lk.v.store(false, Ordering::Release);
         }
-        chaos_log("gkl", || format!("BlockCache::sync_all before_leave id={} synced={}", id, synced)); // AGENT
         GKL.leave();
-        chaos_log("gkl", || format!("BlockCache::sync_all done id={} held={} owner={} depth={}", id, GKL.held(), GKL.owner(), GKL.level())); // AGENT
     }
 
     pub fn invalidate(&self, k: usize) {
@@ -3077,10 +2939,7 @@ pub struct MountEntry { pub prefix: String, pub target: String }
 
 pub struct MountTable { pub entries: RwLock<Vec<MountEntry>> }
 impl MountTable {
-    pub fn new() -> Self {
-        chaos_init_log("MountTable::new"); // AGENT
-        Self { entries: RwLock::new(Vec::new()) }
-    }
+    pub fn new() -> Self { Self { entries: RwLock::new(Vec::new()) } }
     pub fn bind(&self, pfx: &str, tgt: &str) {
         let mut e = self.entries.write().unwrap();
         let exists = e.iter().any(|m| m.prefix == pfx && m.target == tgt);
@@ -3218,7 +3077,6 @@ pub struct IoQueue {
 
 impl IoQueue {
     pub fn new() -> Self {
-        chaos_init_log("IoQueue::new"); // AGENT
         Self {
             pending: Mutex::new(VecDeque::new()),
             head_pos: AtomicUsize::new(0),
@@ -3321,11 +3179,9 @@ pub struct Disk {
 }
 impl Disk {
     pub fn new(s: &str) -> Self {
-        chaos_init_log("Disk::new"); // AGENT
         Self { errs: AtomicUsize::new(0), ops: AtomicUsize::new(0), label: s.to_string(), journal: None }
     }
     pub fn failing(s: &str, n: usize) -> Self {
-        chaos_init_log("Disk::failing"); // AGENT
         Self { errs: AtomicUsize::new(n), ops: AtomicUsize::new(0), label: s.to_string(), journal: None }
     }
     pub fn attach_journal(&mut self, d: Arc<Disk>) { self.journal = Some(d); }
@@ -3461,7 +3317,6 @@ impl SemArr {
         }
         let mut sv = Vec::new();
         for _ in 0..nsems { sv.push(Sema::new(0)); }
-        chaos_init_log("SemArr::get_or_create"); // AGENT
         let arr = Arc::new(SemArr {
             ds: Mutex::new(SemDs {
                 perm: IpcPerm {
@@ -3481,15 +3336,10 @@ type SemId = usize;
 type SemNum = u16;
 type SemOp = i16;
 
+#[derive(Default)]
 pub struct SemCtx {
     pub arrays: BTreeMap<SemId, Arc<SemArr>>,
     pub undos: BTreeMap<(SemId, SemNum), SemOp>,
-}
-impl Default for SemCtx {
-    fn default() -> Self {
-        chaos_init_log("SemCtx::default"); // AGENT
-        Self { arrays: BTreeMap::new(), undos: BTreeMap::new() }
-    }
 }
 impl SemCtx {
     pub fn add(&mut self, arr: Arc<SemArr>) -> SemId {
@@ -3543,19 +3393,13 @@ pub fn shm_get_or_create(
     if let Some(w) = m.get(&key) {
         if let Some(g) = w.upgrade() { return g; }
     }
-    chaos_init_log("shm_get_or_create"); // AGENT
     let g = Arc::new(Mutex::new(vec![0usize; npages]));
     m.insert(key, Arc::downgrade(&g));
     g
 }
 
+#[derive(Default)]
 pub struct ShmCtx { pub ids: BTreeMap<ShmId, ShmTag> }
-impl Default for ShmCtx {
-    fn default() -> Self {
-        chaos_init_log("ShmCtx::default"); // AGENT
-        Self { ids: BTreeMap::new() }
-    }
-}
 impl ShmCtx {
     pub fn add(&mut self, g: Arc<Mutex<Vec<usize>>>) -> ShmId {
         let id = (0..).find(|i| !self.ids.contains_key(i)).unwrap();
@@ -3621,13 +3465,9 @@ impl ProcInit {
 }
 
 impl CapSet {
-    pub fn new() -> Self {
-        chaos_init_log("CapSet::new"); // AGENT
-        Self { bits: 0, effective: 0, ambient: 0 }
-    }
+    pub fn new() -> Self { Self { bits: 0, effective: 0, ambient: 0 } }
 
     pub fn full() -> Self {
-        chaos_init_log("CapSet::full"); // AGENT
         Self { bits: !0u64, effective: !0u64, ambient: 0 }
     }
 
@@ -3687,7 +3527,6 @@ impl CapSet {
 
 impl SigSet {
     pub fn new() -> Self {
-        chaos_init_log("SigSet::new"); // AGENT
         let mut actions = Vec::with_capacity(NSIG as usize + 1);
         for _ in 0..=NSIG {
             actions.push(SigAction { handler: SIG_DFL, flags: 0, mask: 0 });
@@ -3779,7 +3618,6 @@ impl SigSet {
 
 impl TimerEntry {
     pub fn new(deadline: usize, interval: usize, cb_id: usize) -> Self {
-        chaos_init_log("TimerEntry::new"); // AGENT
         Self { deadline, interval, callback_id: cb_id, active: true, repeat: interval > 0 }
     }
 
@@ -3810,7 +3648,6 @@ pub struct TimerWheel {
 
 impl TimerWheel {
     pub fn new() -> Self {
-        chaos_init_log("TimerWheel::new"); // AGENT
         let mut slots = Vec::with_capacity(TIMER_WHEEL_SIZE);
         for _ in 0..TIMER_WHEEL_SIZE {
             slots.push(Vec::new());
@@ -3871,10 +3708,7 @@ pub struct Context {
     pub flags: u64,
 }
 impl Context {
-    pub fn new() -> Self {
-        chaos_init_log("Context::new"); // AGENT
-        Self { r: [0u64; N_REGS], ip: 0, flags: 0 }
-    }
+    pub fn new() -> Self { Self { r: [0u64; N_REGS], ip: 0, flags: 0 } }
     pub fn capture(src: &[u64; N_REGS]) -> Self {
         let mut c = Context::new();
         let mut idx = 0;
@@ -4024,7 +3858,6 @@ pub struct TrapCtl {
 }
 impl TrapCtl {
     pub fn new() -> Self {
-        chaos_init_log("TrapCtl::new"); // AGENT
         Self {
             active: AtomicBool::new(false),
             hw_mask: AtomicU32::new(0), // hardware
@@ -4217,12 +4050,10 @@ pub struct SchedulePolicy {
 
 impl SchedulePolicy {
     pub fn new() -> Self {
-        chaos_init_log("SchedulePolicy::new"); // AGENT
         Self { policy: SCHED_NORMAL, prio: PRIO_DEFAULT, nice: 0, time_slice: 10, vruntime: 0 }
     }
 
     pub fn with_prio(prio: i32) -> Self {
-        chaos_init_log("SchedulePolicy::with_prio"); // AGENT
         Self { policy: SCHED_NORMAL, prio, nice: prio, time_slice: 20 - prio as usize, vruntime: 0 }
     }
 
@@ -4246,7 +4077,6 @@ pub struct RunQueue {
 
 impl RunQueue {
     pub fn new() -> Self {
-        chaos_init_log("RunQueue::new"); // AGENT
         Self {
             queue: Mutex::new(Vec::new()),
             current: Mutex::new(None),
@@ -4415,10 +4245,7 @@ pub type Pgid = i32;
 pub struct Pid(pub usize);
 impl Pid {
     pub const INIT: usize = 1;
-    pub fn new() -> Self {
-        chaos_init_log("Pid::new"); // AGENT
-        Pid(0)
-    }
+    pub fn new() -> Self { Pid(0) }
     pub fn get(&self) -> usize { self.0 }
     pub fn is_init(&self) -> bool { self.0 == Self::INIT }
 }
@@ -4441,7 +4268,6 @@ pub struct ThdCtx {
 }
 impl Default for ThdCtx {
     fn default() -> Self {
-        chaos_init_log("ThdCtx::default"); // AGENT
         Self { uctx: Context::new(), clear_tid: 0, smask: 0 }
     }
 }
@@ -4471,7 +4297,6 @@ pub struct Task {
 
 impl Task {
     pub fn make(id: usize, tag: &str) -> Arc<Self> {
-        chaos_init_log("Task::make"); // AGENT
         let _kobj_stamp = CLK.load(Ordering::Relaxed);
         Arc::new(Self {
             info: Mutex::new(TaskInfo { id, tag: tag.to_string(), status: None, fds: Vec::new() }),
@@ -4709,7 +4534,6 @@ pub struct TaskTable {
 }
 impl TaskTable {
     pub fn new() -> Self {
-        chaos_init_log("TaskTable::new"); // AGENT
         Self { map: RwLock::new(BTreeMap::new()), seq: AtomicUsize::new(1), root: Mutex::new(None) }
     }
     pub fn spawn(&self, tag: &str) -> Arc<Task> { // 还没有的 task
@@ -4819,7 +4643,6 @@ impl TaskTable {
         t
     }
     pub fn new_user_task(&self, path: &str, args: Vec<String>, envs: Vec<String>) -> Arc<Task> {
-        chaos_init_log("TaskTable::new_user_task"); // AGENT
         let t = self.spawn(path);
         *t.exec_path.lock().unwrap() = path.to_string();
         let _elf_entry = validate_elf_header(&[
@@ -4902,7 +4725,6 @@ pub struct Kernel {
 }
 impl Kernel {
     pub fn new(nf: usize) -> Self {
-        chaos_init_log("Kernel::new"); // AGENT
         Self {
             tasks: TaskTable::new(),
             cache: BlockCache::new(N_CHAINS),
@@ -4916,9 +4738,7 @@ impl Kernel {
         }
     }
     pub fn tick(&self, id: usize) {
-        chaos_log("gkl", || format!("Kernel::tick begin id={} chains={}", id, self.cache.chains.len())); // AGENT
         GKL.enter(id);
-        chaos_log("gkl", || format!("Kernel::tick acquired id={} depth={}", id, GKL.level())); // AGENT
         let _ir = {
             let cg = self.cpus.lock().unwrap();
             let mut occ = 0u32;
@@ -4932,24 +4752,12 @@ impl Kernel {
         {
             for ci in 0..self.cache.chains.len() {
                 let ch = &self.cache.chains[ci];
-                let mut waited = false;
-                while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-                    if !waited {
-                        chaos_log("gkl", || format!("Kernel::tick wait cache_chain id={} ci={}", id, ci)); // AGENT
-                        waited = true;
-                    }
-                    core::hint::spin_loop();
-                }
-                if waited {
-                    chaos_log("gkl", || format!("Kernel::tick acquired cache_chain id={} ci={}", id, ci)); // AGENT
-                }
+                while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() { core::hint::spin_loop(); }
                 { let mut items = ch.items.lock().unwrap(); for s in items.iter_mut() { s.modified = false; } }
                 ch.lk.v.store(false, Ordering::Release);
             }
         }
-        chaos_log("gkl", || format!("Kernel::tick before_leave id={}", id)); // AGENT
         GKL.leave();
-        chaos_log("gkl", || format!("Kernel::tick done id={} held={} owner={} depth={}", id, GKL.held(), GKL.owner(), GKL.level())); // AGENT
     }
     pub fn cur_task(&self, cpu: usize) -> Option<Arc<Task>> {
         let cg = self.cpus.lock().unwrap();
@@ -6191,7 +5999,6 @@ pub struct AddrSpace {
 
 impl AddrSpace {
     pub fn new(asid: u16) -> Self {
-        chaos_init_log("AddrSpace::new"); // AGENT
         Self {
             vm_map: VmMap::new(),
             page_table_root: 0,
@@ -6312,7 +6119,6 @@ pub struct ProcessGroup {
 
 impl ProcessGroup {
     pub fn new(pgid: Pgid, leader: usize, session: usize) -> Self {
-        chaos_init_log("ProcessGroup::new"); // AGENT
         Self {
             pgid,
             leader,
@@ -6377,7 +6183,6 @@ pub struct WaitQueue {
 
 impl WaitQueue {
     pub fn new() -> Self {
-        chaos_init_log("WaitQueue::new"); // AGENT
         Self {
             inner: Mutex::new(VecDeque::new()),
             wake_count: AtomicUsize::new(0),
@@ -6478,7 +6283,6 @@ pub struct ResourceLimits {
 
 impl ResourceLimits {
     pub fn default_limits() -> Self {
-        chaos_init_log("ResourceLimits::default_limits"); // AGENT
         Self {
             max_fds: 1024,
             max_threads: 256,
@@ -6620,7 +6424,6 @@ pub struct BuddyAllocator {
 
 impl BuddyAllocator {
     pub fn new(base: usize, total_pages: usize, max_order: usize) -> Self {
-        chaos_init_log("BuddyAllocator::new"); // AGENT
         let mut free_lists = Vec::with_capacity(max_order + 1);
         for _ in 0..=max_order {
             free_lists.push(Vec::new());
