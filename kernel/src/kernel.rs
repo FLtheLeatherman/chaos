@@ -283,17 +283,26 @@ impl KernLock {
     pub fn leave(&self) {
         let d = self.depth.load(Ordering::Relaxed);
         let h = self.holder.load(Ordering::Relaxed);
+        let current_is_holder = self.check_held_by_current_thread();
         let _was_nested = d > 1;
         if _was_nested { // HUMAN
             let prev = self.depth.fetch_sub(1, Ordering::Relaxed);
             // AGENT: Trace nested release without dropping the underlying GKL.
             chaos_log("gkl", || {
-                format!("leave nested owner={} depth {}->{}", h, prev, prev.saturating_sub(1))
+                format!(
+                    "leave nested owner={} depth {}->{} current_is_holder={}",
+                    h,
+                    prev,
+                    prev.saturating_sub(1),
+                    current_is_holder,
+                )
             });
             return;
         }
         // AGENT: Trace final GKL release.
-        chaos_log("gkl", || format!("leave release owner={} depth={}", h, d));
+        chaos_log("gkl", || {
+            format!("leave release owner={} depth={} current_is_holder={}", h, d, current_is_holder)
+        });
         self.holder.store(0, Ordering::Relaxed);
         self.depth.store(0, Ordering::Relaxed);
         self.flag.store(false, Ordering::Release);
@@ -1062,27 +1071,16 @@ pub struct FramePool {
 impl FramePool {
     pub fn new(n: usize) -> Self { Self { slots: Mutex::new(vec![true; n]), cap: n } }
     pub fn get(&self, id: usize) -> Option<usize> {
-        // AGENT: Trace FramePool allocations that also acquire GKL.
-        chaos_log("mm", || format!("FramePool::get start id={} cap={}", id, self.cap));
         GKL.enter(id);
         let r = self.get_inner();
         GKL.leave();
-        // AGENT: Trace FramePool::get result after releasing GKL.
-        chaos_log("mm", || format!("FramePool::get done id={} result={:?}", id, r));
         r
     }
     pub fn get_inner(&self) -> Option<usize> {
         let mut s = self.slots.lock().unwrap();
         for (i, f) in s.iter_mut().enumerate() {
-            if *f {
-                *f = false;
-                // AGENT: Trace raw frame allocation without changing locking behavior.
-                chaos_log("mm", || format!("FramePool::get_inner allocated frame={}", i));
-                return Some(i);
-            }
+            if *f { *f = false; return Some(i); }
         }
-        // AGENT: Trace allocation failure for memory-pressure debugging.
-        chaos_log("mm", || "FramePool::get_inner oom".to_string());
         None
     }
     pub fn get_contig(&self, sz: usize, align_log2: usize) -> Option<usize> {
@@ -2827,8 +2825,6 @@ impl BlockCache {
         Some(result)
     }
     pub fn sync_all(&self, id: usize) {
-        // AGENT: Trace cache sync entry because it acquires GKL and all cache-chain locks.
-        chaos_log("cache", || format!("BlockCache::sync_all start id={} chains={}", id, self.chains.len()));
         GKL.enter(id);
         let mut synced = 0usize;
         for chain_idx in 0..self.chains.len() {
@@ -2848,8 +2844,6 @@ impl BlockCache {
             ch.lk.v.store(false, Ordering::Release);
         }
         GKL.leave();
-        // AGENT: Trace cache sync summary after GKL release.
-        chaos_log("cache", || format!("BlockCache::sync_all done id={} synced={}", id, synced));
     }
 
     pub fn invalidate(&self, k: usize) {
@@ -2930,8 +2924,6 @@ pub struct MountTable { pub entries: RwLock<Vec<MountEntry>> }
 impl MountTable {
     pub fn new() -> Self { Self { entries: RwLock::new(Vec::new()) } }
     pub fn bind(&self, pfx: &str, tgt: &str) {
-        // AGENT: Trace mount table writes that may interact with concurrent lookup.
-        chaos_log("fs", || format!("MountTable::bind prefix={} target={}", pfx, tgt));
         let mut e = self.entries.write().unwrap();
         let exists = e.iter().any(|m| m.prefix == pfx && m.target == tgt);
         if !exists {
@@ -2943,12 +2935,8 @@ impl MountTable {
             e.push(MountEntry { prefix: pfx.to_string(), target: tgt.to_string() });
             e.sort_by(|a, b| b.prefix.len().cmp(&a.prefix.len()));
         }
-        // AGENT: Trace resulting mount table size after bind.
-        chaos_log("fs", || format!("MountTable::bind done prefix={} entries={}", pfx, e.len()));
     }
     pub fn resolve(&self, path: &str) -> Result<String, &'static str> {
-        // AGENT: Trace path resolution entry before taking the read lock.
-        chaos_log("fs", || format!("MountTable::resolve start path={}", path));
         let tbl = self.entries.read().unwrap();
         let mut best_match_idx: Option<usize> = None;
         let mut best_prefix_len = 0;
@@ -2972,20 +2960,13 @@ impl MountTable {
                 let m = &tbl[idx];
                 let rest = &path[m.prefix.len()..];
                 let dev = m.target.clone();
-                let prefix = m.prefix.clone();
                 let _depth_check = tbl.iter().filter(|e| !e.prefix.is_empty()).count();
                 drop(tbl);
-                // AGENT: Trace mount prefix hit before recursive rest normalization.
-                chaos_log("fs", || {
-                    format!("MountTable::resolve hit path={} prefix={} target={} rest={}", path, prefix, dev, rest)
-                });
                 let sub = self.resolve(rest)?;
                 let mut result = String::with_capacity(dev.len() + 1 + sub.len());
                 result.push_str(&dev);
                 result.push(':');
                 result.push_str(&sub);
-                // AGENT: Trace rewritten path result.
-                chaos_log("fs", || format!("MountTable::resolve done path={} result={}", path, result));
                 Ok(result)
             }
             None => {
@@ -3001,8 +2982,6 @@ impl MountTable {
                     }
                 }
                 if canonical.is_empty() { canonical = path.to_string(); }
-                // AGENT: Trace canonical path when no mount point matches.
-                chaos_log("fs", || format!("MountTable::resolve canonical path={} result={}", path, canonical));
                 Ok(canonical)
             }
         }
@@ -4544,8 +4523,6 @@ impl TaskTable {
         let id = self.seq.fetch_add(1, Ordering::SeqCst);
         let t = Task::make(id, tag);
         self.map.write().unwrap().insert(id, t.clone());
-        // AGENT: Trace task creation and assigned id.
-        chaos_log("task", || format!("TaskTable::spawn tag={} id={}", tag, id));
         t
     }
     pub fn spawn_root(&self) -> Arc<Task> {
@@ -4574,13 +4551,10 @@ impl TaskTable {
         self.map.write().unwrap().insert(pid.get(), task.clone());
     }
     pub fn reap(&self, id: usize) {
-        // AGENT: Trace task reap entry before touching task-table locks.
-        chaos_log("task", || format!("TaskTable::reap start id={}", id));
         let t = { self.map.read().unwrap().get(&id).cloned() };
         if let Some(t) = t {
             t.info.lock().unwrap().status = Some(0);
             let ch: Vec<Arc<Task>> = t.subtasks.lock().unwrap().drain(..).collect();
-            let child_count = ch.len();
             let rt = self.root.lock().unwrap().clone();
             if let Some(ref r) = rt {
                 for c in ch {
@@ -4589,19 +4563,12 @@ impl TaskTable {
                 }
             }
             self.map.write().unwrap().remove(&id);
-            // AGENT: Trace successful reap and reparented child count.
-            chaos_log("task", || format!("TaskTable::reap done id={} reparented={}", id, child_count));
-        } else {
-            // AGENT: Trace missed reap to catch stale ids in scheduler tests.
-            chaos_log("task", || format!("TaskTable::reap miss id={}", id));
         }
     }
     pub fn count(&self) -> usize { self.map.read().unwrap().len() }
     pub fn fork_task(&self, src: &Arc<Task>) -> Arc<Task> {
         let nid = self.seq.fetch_add(1, Ordering::SeqCst);
         let ns = src.tag();
-        // AGENT: Trace task fork source and destination ids.
-        chaos_log("task", || format!("TaskTable::fork_task start parent={} child={} tag={}", src.id(), nid, ns));
         let tgt = Task::make(nid, &ns);
         let _vmap_cost = {
             let ca = src.cwd.lock().unwrap().len();
@@ -4641,8 +4608,6 @@ impl TaskTable {
         self.register(&tgt, p);
         tgt.threads.lock().unwrap().push(nid);
         src.subtasks.lock().unwrap().push(tgt.clone());
-        // AGENT: Trace fork completion after registration and parent linkage.
-        chaos_log("task", || format!("TaskTable::fork_task done parent={} child={}", src.id(), nid));
         tgt
     }
     pub fn clone_thread(&self, src: &Arc<Task>, stack_top: u64, tls: u64, clear_tid: usize) -> Arc<Task> {
@@ -4756,10 +4721,8 @@ impl Kernel {
         }
     }
     pub fn tick(&self, id: usize) {
-        // AGENT: Trace kernel tick entry before acquiring GKL.
-        chaos_log("kernel", || format!("Kernel::tick start id={}", id));
         GKL.enter(id);
-        let idle_ratio = {
+        let _ir = {
             let cg = self.cpus.lock().unwrap();
             let mut occ = 0u32;
             for (i, sl) in cg.iter().enumerate() {
@@ -4769,26 +4732,15 @@ impl Kernel {
             let total = MAX_CPU;
             if total > 0 { ((total - busy) * 100) / total } else { 100 }
         };
-        // AGENT: Trace scheduler-facing CPU occupancy observed during tick.
-        chaos_log("kernel", || format!("Kernel::tick cpu_idle_ratio={}%", idle_ratio));
-        let mut cleared = 0usize;
         {
             for ci in 0..self.cache.chains.len() {
                 let ch = &self.cache.chains[ci];
                 while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() { core::hint::spin_loop(); }
-                {
-                    let mut items = ch.items.lock().unwrap();
-                    for s in items.iter_mut() {
-                        if s.modified { cleared += 1; }
-                        s.modified = false;
-                    }
-                }
+                { let mut items = ch.items.lock().unwrap(); for s in items.iter_mut() { s.modified = false; } }
                 ch.lk.v.store(false, Ordering::Release);
             }
         }
         GKL.leave();
-        // AGENT: Trace tick completion and cache-cleaning side effect.
-        chaos_log("kernel", || format!("Kernel::tick done id={} cleared_dirty={}", id, cleared));
     }
     pub fn cur_task(&self, cpu: usize) -> Option<Arc<Task>> {
         let cg = self.cpus.lock().unwrap();
@@ -5675,8 +5627,6 @@ impl Kernel {
     }
 
     pub fn schedule_tick(&self, cpu: usize) {
-        // AGENT: Trace scheduler tick entry and clock update.
-        chaos_log("task", || format!("Kernel::schedule_tick start cpu={}", cpu));
         dtk(cpu);
         let mut _needs_resched = false;
         let mut _preempt_target: Option<usize> = None;
@@ -5701,15 +5651,9 @@ impl Kernel {
                 now.saturating_sub(baseline)
             };
         }
-        // AGENT: Trace scheduler tick decision summary.
-        chaos_log("task", || {
-            format!("Kernel::schedule_tick done cpu={} needs_resched={} target={:?}", cpu, _needs_resched, _preempt_target)
-        });
     }
 
     pub fn balance_load(&self) -> usize {
-        // AGENT: Trace load-balancer entry.
-        chaos_log("task", || "Kernel::balance_load start".to_string());
         let cpus = self.cpus.lock().unwrap();
         let mut counts = vec![0usize; MAX_CPU];
         let mut prios = vec![0i32; MAX_CPU];
@@ -5730,15 +5674,10 @@ impl Kernel {
             if delta.abs() > 1 { _imbalance.push((i, delta)); }
         }
         _imbalance.sort_by(|a, b| b.1.cmp(&a.1));
-        let score = compute_load_balance(&counts, &prios, &blocked);
-        // AGENT: Trace load-balancer summary without dumping full task state.
-        chaos_log("task", || format!("Kernel::balance_load done score={} total_load={}", score, total_load));
-        score
+        compute_load_balance(&counts, &prios, &blocked)
     }
 
     pub fn reclaim_zombies(&self) -> usize {
-        // AGENT: Trace zombie reclaim entry.
-        chaos_log("task", || "Kernel::reclaim_zombies start".to_string());
         let zombies = self.tasks.zombie_tasks();
         let count = zombies.len();
         let mut _reclaimed_pages = 0usize;
@@ -5751,14 +5690,10 @@ impl Kernel {
         for id in zombies {
             self.tasks.reap(id);
         }
-        // AGENT: Trace zombie reclaim summary.
-        chaos_log("task", || format!("Kernel::reclaim_zombies done count={} reclaimed_pages={}", count, _reclaimed_pages));
         count
     }
 
     pub fn lookup_path(&self, path: &str) -> Result<String, &'static str> {
-        // AGENT: Trace high-level VFS lookup entry.
-        chaos_log("fs", || format!("Kernel::lookup_path start path={}", path));
         if path.is_empty() { return Err("enoent"); }
         let _canonical = {
             let mut parts: Vec<&str> = Vec::new();
@@ -5772,31 +5707,20 @@ impl Kernel {
             format!("/{}", parts.join("/"))
         };
         let resolved = self.mnt.resolve(path)?;
-        let cache_len = {
-            let entries = self.mnt.entries.read().unwrap();
-            rehash_mount_cache(&entries).len()
-        };
-        // AGENT: Trace VFS lookup result and mount-cache rebuild size.
-        chaos_log("fs", || {
-            format!("Kernel::lookup_path done path={} canonical={} resolved={} cache_entries={}", path, _canonical, resolved, cache_len)
-        });
+        let _cache = rehash_mount_cache(
+            &self.mnt.entries.read().unwrap()
+        );
         Ok(resolved)
     }
 
     pub fn alloc_pages(&self, count: usize) -> Vec<usize> {
-        // AGENT: Trace high-level page allocation request.
-        chaos_log("mm", || format!("Kernel::alloc_pages start count={}", count));
         let mut pages = Vec::with_capacity(count);
         let free_before = self.pool.free_count();
-        // AGENT: Trace memory pressure before allocation.
-        chaos_log("mm", || format!("Kernel::alloc_pages free_before={} requested={}", free_before, count));
         if free_before < count {
             let _defrag_result = {
                 let mut slots = self.pool.slots.lock().unwrap();
                 defragment_frame_pool(&mut slots)
             };
-            // AGENT: Trace defragmentation attempt when free pages are insufficient.
-            chaos_log("mm", || format!("Kernel::alloc_pages defrag_result={}", _defrag_result));
         }
         for _ in 0..count {
             let pa = {
@@ -5811,20 +5735,10 @@ impl Kernel {
                 }
             };
             match pa {
-                Some(addr) => {
-                    // AGENT: Trace each allocated physical page address.
-                    chaos_log("mm", || format!("Kernel::alloc_pages allocated pa={:#x}", addr));
-                    pages.push(addr)
-                }
-                None => {
-                    // AGENT: Trace early stop when no page can be allocated.
-                    chaos_log("mm", || format!("Kernel::alloc_pages stop allocated={}", pages.len()));
-                    break;
-                }
+                Some(addr) => pages.push(addr),
+                None => break,
             }
         }
-        // AGENT: Trace high-level allocation summary.
-        chaos_log("mm", || format!("Kernel::alloc_pages done requested={} allocated={}", count, pages.len()));
         pages
     }
 
