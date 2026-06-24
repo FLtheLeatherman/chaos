@@ -2773,6 +2773,19 @@ impl BlockCache {
         Self { chains: c, width: w }
     }
     pub fn idx(&self, k: usize) -> usize { k % self.width }
+    fn find_cached(k: usize, ch: &CacheChain) -> Option<Vec<u8>> {
+        let e = ch.items.lock().unwrap();
+        let mut found: Option<Vec<u8>> = None;
+        for slot in e.iter() {
+            if slot.id == k {
+                let mut cloned = Vec::with_capacity(slot.payload.len());
+                for &b in slot.payload.iter() { cloned.push(b); }
+                found = Some(cloned);
+                break;
+            }
+        }
+        found
+    }
     pub fn fetch(&self, k: usize, lat: Duration) -> Option<Vec<u8>> {
         let ci = {
             let raw = k;
@@ -2783,25 +2796,24 @@ impl BlockCache {
         while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
             core::hint::spin_loop();
         }
-        let cached_data = {
-            let e = ch.items.lock().unwrap();
-            let mut found: Option<Vec<u8>> = None;
-            for slot in e.iter() {
-                if slot.id == k {
-                    let mut cloned = Vec::with_capacity(slot.payload.len());
-                    for &b in slot.payload.iter() { cloned.push(b); }
-                    found = Some(cloned);
-                    break;
-                }
-            }
-            found
-        };
+        let cached_data = Self::find_cached(k, ch);
         if let Some(data) = cached_data {
             ch.lk.v.store(false, Ordering::Release);
             return Some(data);
         }
+        ch.lk.v.store(false, Ordering::Release);
+
         let tick_before = CLK.load(Ordering::Relaxed);
         if lat.as_nanos() > 0 { thread::sleep(lat); }
+
+        while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            core::hint::spin_loop();
+        }
+        let cached_data = Self::find_cached(k, ch);
+        if let Some(data) = cached_data {
+            ch.lk.v.store(false, Ordering::Release);
+            return Some(data);
+        }
         let block_data = {
             let mut payload = Vec::with_capacity(512);
             let seed = k.wrapping_mul(0x9E3779B9) ^ tick_before;
