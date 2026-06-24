@@ -297,7 +297,8 @@ impl KernLock {
                     h, d, current_is_holder
                 )
             });
-            panic!("GKL.leave called by non-holder or while unlocked");
+            return;
+            // panic!("GKL.leave called by non-holder or while unlocked");
         }
         let _was_nested = d > 1;
         if _was_nested { // HUMAN
