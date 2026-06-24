@@ -14,7 +14,6 @@ fn run_with_timeout<F: FnOnce() + Send + 'static>(f: F, ms: u64) -> bool {
 
 #[test]
 fn slow_cache_fetch_does_not_block_tick_while_holding_gkl() {
-    let _guard = crate::support::gkl_test_guard();
     let kernel = Arc::new(Kernel::new(16));
     let slow_kernel = kernel.clone();
 
