@@ -245,10 +245,17 @@ pub struct KernLock {
     holder: AtomicUsize,
     depth: AtomicUsize,
     holder_thread: Mutex<Option<thread::ThreadId>>,
+    holder_site: Mutex<Option<(&'static str, u32)>>,
 }
 impl KernLock {
     pub const fn new() -> Self {
-        Self { flag: AtomicBool::new(false), holder: AtomicUsize::new(0), depth: AtomicUsize::new(0), holder_thread: Mutex::new(None), }
+        Self {
+            flag: AtomicBool::new(false),
+            holder: AtomicUsize::new(0),
+            depth: AtomicUsize::new(0),
+            holder_thread: Mutex::new(None),
+            holder_site: Mutex::new(None),
+        }
     }
     // HUMAN
     fn check_held_by_current_thread(&self) -> bool {
@@ -264,6 +271,14 @@ impl KernLock {
             None => "None".to_string(),
         }
     }
+    // AGENT: Keep the acquisition callsite visible in later wait/invalid-release logs.
+    fn holder_site_label(&self) -> String {
+        let site = self.holder_site.lock().unwrap();
+        match *site {
+            Some((file, line)) => format!("{}:{}", file, line),
+            None => "None".to_string(),
+        }
+    }
     #[track_caller]
     pub fn enter(&self, id: usize) {
         let caller = std::panic::Location::caller();
@@ -273,10 +288,11 @@ impl KernLock {
             // AGENT: Trace same-thread recursive GKL acquisition.
             chaos_log("gkl", || {
                 format!(
-                    "enter reentrant id={} owner={} owner_thread={} depth {}->{} caller={}:{}",
+                    "enter reentrant id={} owner={} owner_thread={} owner_site={} depth {}->{} caller={}:{}",
                     id,
                     owner,
                     self.holder_thread_label(),
+                    self.holder_site_label(),
                     prev,
                     prev + 1,
                     caller.file(),
@@ -288,11 +304,12 @@ impl KernLock {
         // AGENT: Trace GKL contention before spinning.
         chaos_log("gkl", || {
             format!(
-                "enter wait id={} held={} owner={} owner_thread={} depth={} caller={}:{}",
+                "enter wait id={} held={} owner={} owner_thread={} owner_site={} depth={} caller={}:{}",
                 id,
                 self.flag.load(Ordering::Relaxed),
                 self.holder.load(Ordering::Relaxed),
                 self.holder_thread_label(),
+                self.holder_site_label(),
                 self.depth.load(Ordering::Relaxed),
                 caller.file(),
                 caller.line(),
@@ -302,14 +319,16 @@ impl KernLock {
             core::hint::spin_loop();
         }
         *self.holder_thread.lock().unwrap() = Some(thread::current().id());
+        *self.holder_site.lock().unwrap() = Some((caller.file(), caller.line()));
         self.holder.store(id, Ordering::Relaxed);
         self.depth.store(1, Ordering::Relaxed);
         // AGENT: Trace successful first-level GKL acquisition.
         chaos_log("gkl", || {
             format!(
-                "enter acquired id={} owner_thread={} depth=1 caller={}:{}",
+                "enter acquired id={} owner_thread={} owner_site={} depth=1 caller={}:{}",
                 id,
                 self.holder_thread_label(),
+                self.holder_site_label(),
                 caller.file(),
                 caller.line(),
             )
@@ -325,9 +344,10 @@ impl KernLock {
         if d == 0 || !self.flag.load(Ordering::Relaxed) || !current_is_holder {
             chaos_log("gkl", || {
                 format!(
-                    "leave invalid owner={} owner_thread={} depth={} current_is_holder={} caller={}:{}",
+                    "leave invalid owner={} owner_thread={} owner_site={} depth={} current_is_holder={} caller={}:{}",
                     h,
                     self.holder_thread_label(),
+                    self.holder_site_label(),
                     d,
                     current_is_holder,
                     caller.file(),
@@ -343,9 +363,10 @@ impl KernLock {
             // AGENT: Trace nested release without dropping the underlying GKL.
             chaos_log("gkl", || {
                 format!(
-                    "leave nested owner={} owner_thread={} depth {}->{} current_is_holder={} caller={}:{}",
+                    "leave nested owner={} owner_thread={} owner_site={} depth {}->{} current_is_holder={} caller={}:{}",
                     h,
                     self.holder_thread_label(),
+                    self.holder_site_label(),
                     prev,
                     prev.saturating_sub(1),
                     current_is_holder,
@@ -358,9 +379,10 @@ impl KernLock {
         // AGENT: Trace final GKL release.
         chaos_log("gkl", || {
             format!(
-                "leave release owner={} owner_thread={} depth={} current_is_holder={} caller={}:{}",
+                "leave release owner={} owner_thread={} owner_site={} depth={} current_is_holder={} caller={}:{}",
                 h,
                 self.holder_thread_label(),
+                self.holder_site_label(),
                 d,
                 current_is_holder,
                 caller.file(),
@@ -371,10 +393,14 @@ impl KernLock {
         self.depth.store(0, Ordering::Relaxed);
         self.flag.store(false, Ordering::Release);
         *self.holder_thread.lock().unwrap() = None;
+        *self.holder_site.lock().unwrap() = None;
         // AGENT: Confirm visible unlocked state after release.
         chaos_log("gkl", || "leave released owner=0 depth=0".to_string());
     }
-    pub fn held(&self) -> bool { self.flag.load(Ordering::Relaxed) }
+    pub fn held(&self) -> bool {
+        // AGENT: Report whether the current host thread owns GKL, not whether any thread owns it.
+        self.check_held_by_current_thread()
+    }
     pub fn owner(&self) -> usize { self.holder.load(Ordering::Relaxed) }
     pub fn level(&self) -> usize { self.depth.load(Ordering::Relaxed) }
     #[track_caller]
@@ -386,10 +412,11 @@ impl KernLock {
             // AGENT: Trace try_enter when it resolves as same-thread recursion.
             chaos_log("gkl", || {
                 format!(
-                    "try_enter reentrant id={} owner={} owner_thread={} depth {}->{} caller={}:{}",
+                    "try_enter reentrant id={} owner={} owner_thread={} owner_site={} depth {}->{} caller={}:{}",
                     id,
                     owner,
                     self.holder_thread_label(),
+                    self.holder_site_label(),
                     prev,
                     prev + 1,
                     caller.file(),
@@ -400,14 +427,16 @@ impl KernLock {
         }
         if self.flag.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
             *self.holder_thread.lock().unwrap() = Some(thread::current().id());
+            *self.holder_site.lock().unwrap() = Some((caller.file(), caller.line()));
             self.holder.store(id, Ordering::Relaxed);
             self.depth.store(1, Ordering::Relaxed);
             // AGENT: Trace successful non-blocking GKL acquisition.
             chaos_log("gkl", || {
                 format!(
-                    "try_enter acquired id={} owner_thread={} depth=1 caller={}:{}",
+                    "try_enter acquired id={} owner_thread={} owner_site={} depth=1 caller={}:{}",
                     id,
                     self.holder_thread_label(),
+                    self.holder_site_label(),
                     caller.file(),
                     caller.line(),
                 )
@@ -417,10 +446,11 @@ impl KernLock {
             // AGENT: Trace failed non-blocking acquisition with current owner/depth.
             chaos_log("gkl", || {
                 format!(
-                    "try_enter busy id={} owner={} owner_thread={} depth={} caller={}:{}",
+                    "try_enter busy id={} owner={} owner_thread={} owner_site={} depth={} caller={}:{}",
                     id,
                     self.holder.load(Ordering::Relaxed),
                     self.holder_thread_label(),
+                    self.holder_site_label(),
                     self.depth.load(Ordering::Relaxed),
                     caller.file(),
                     caller.line(),
