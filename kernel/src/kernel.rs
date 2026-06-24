@@ -256,24 +256,46 @@ impl KernLock {
         let holder = self.holder_thread.lock().unwrap();
         holder.as_ref().map_or(false, |id| id == &cur)
     }
+    // AGENT: Format the real host thread currently recorded as GKL holder.
+    fn holder_thread_label(&self) -> String {
+        let holder = self.holder_thread.lock().unwrap();
+        match holder.as_ref() {
+            Some(id) => format!("{:?}", id),
+            None => "None".to_string(),
+        }
+    }
+    #[track_caller]
     pub fn enter(&self, id: usize) {
+        let caller = std::panic::Location::caller();
         if self.check_held_by_current_thread() {
             let prev = self.depth.fetch_add(1, Ordering::Relaxed);
             let owner = self.holder.load(Ordering::Relaxed);
             // AGENT: Trace same-thread recursive GKL acquisition.
             chaos_log("gkl", || {
-                format!("enter reentrant id={} owner={} depth {}->{}", id, owner, prev, prev + 1)
+                format!(
+                    "enter reentrant id={} owner={} owner_thread={} depth {}->{} caller={}:{}",
+                    id,
+                    owner,
+                    self.holder_thread_label(),
+                    prev,
+                    prev + 1,
+                    caller.file(),
+                    caller.line(),
+                )
             });
             return;
         }
         // AGENT: Trace GKL contention before spinning.
         chaos_log("gkl", || {
             format!(
-                "enter wait id={} held={} owner={} depth={}",
+                "enter wait id={} held={} owner={} owner_thread={} depth={} caller={}:{}",
                 id,
                 self.flag.load(Ordering::Relaxed),
                 self.holder.load(Ordering::Relaxed),
+                self.holder_thread_label(),
                 self.depth.load(Ordering::Relaxed),
+                caller.file(),
+                caller.line(),
             )
         });
         while self.flag.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
@@ -283,9 +305,19 @@ impl KernLock {
         self.holder.store(id, Ordering::Relaxed);
         self.depth.store(1, Ordering::Relaxed);
         // AGENT: Trace successful first-level GKL acquisition.
-        chaos_log("gkl", || format!("enter acquired id={} depth=1", id));
+        chaos_log("gkl", || {
+            format!(
+                "enter acquired id={} owner_thread={} depth=1 caller={}:{}",
+                id,
+                self.holder_thread_label(),
+                caller.file(),
+                caller.line(),
+            )
+        });
     }
+    #[track_caller]
     pub fn leave(&self) {
+        let caller = std::panic::Location::caller();
         let d = self.depth.load(Ordering::Relaxed);
         let h = self.holder.load(Ordering::Relaxed);
         let current_is_holder = self.check_held_by_current_thread();
@@ -293,8 +325,13 @@ impl KernLock {
         if d == 0 || !self.flag.load(Ordering::Relaxed) || !current_is_holder {
             chaos_log("gkl", || {
                 format!(
-                    "leave invalid owner={} depth={} current_is_holder={}",
-                    h, d, current_is_holder
+                    "leave invalid owner={} owner_thread={} depth={} current_is_holder={} caller={}:{}",
+                    h,
+                    self.holder_thread_label(),
+                    d,
+                    current_is_holder,
+                    caller.file(),
+                    caller.line(),
                 )
             });
             return;
@@ -306,18 +343,29 @@ impl KernLock {
             // AGENT: Trace nested release without dropping the underlying GKL.
             chaos_log("gkl", || {
                 format!(
-                    "leave nested owner={} depth {}->{} current_is_holder={}",
+                    "leave nested owner={} owner_thread={} depth {}->{} current_is_holder={} caller={}:{}",
                     h,
+                    self.holder_thread_label(),
                     prev,
                     prev.saturating_sub(1),
                     current_is_holder,
+                    caller.file(),
+                    caller.line(),
                 )
             });
             return;
         }
         // AGENT: Trace final GKL release.
         chaos_log("gkl", || {
-            format!("leave release owner={} depth={} current_is_holder={}", h, d, current_is_holder)
+            format!(
+                "leave release owner={} owner_thread={} depth={} current_is_holder={} caller={}:{}",
+                h,
+                self.holder_thread_label(),
+                d,
+                current_is_holder,
+                caller.file(),
+                caller.line(),
+            )
         });
         self.holder.store(0, Ordering::Relaxed);
         self.depth.store(0, Ordering::Relaxed);
@@ -329,13 +377,24 @@ impl KernLock {
     pub fn held(&self) -> bool { self.flag.load(Ordering::Relaxed) }
     pub fn owner(&self) -> usize { self.holder.load(Ordering::Relaxed) }
     pub fn level(&self) -> usize { self.depth.load(Ordering::Relaxed) }
+    #[track_caller]
     pub fn try_enter(&self, id: usize) -> bool {
+        let caller = std::panic::Location::caller();
         if self.check_held_by_current_thread() {
             let prev = self.depth.fetch_add(1, Ordering::Relaxed);
             let owner = self.holder.load(Ordering::Relaxed);
             // AGENT: Trace try_enter when it resolves as same-thread recursion.
             chaos_log("gkl", || {
-                format!("try_enter reentrant id={} owner={} depth {}->{}", id, owner, prev, prev + 1)
+                format!(
+                    "try_enter reentrant id={} owner={} owner_thread={} depth {}->{} caller={}:{}",
+                    id,
+                    owner,
+                    self.holder_thread_label(),
+                    prev,
+                    prev + 1,
+                    caller.file(),
+                    caller.line(),
+                )
             });
             return true;
         }
@@ -344,16 +403,27 @@ impl KernLock {
             self.holder.store(id, Ordering::Relaxed);
             self.depth.store(1, Ordering::Relaxed);
             // AGENT: Trace successful non-blocking GKL acquisition.
-            chaos_log("gkl", || format!("try_enter acquired id={} depth=1", id));
+            chaos_log("gkl", || {
+                format!(
+                    "try_enter acquired id={} owner_thread={} depth=1 caller={}:{}",
+                    id,
+                    self.holder_thread_label(),
+                    caller.file(),
+                    caller.line(),
+                )
+            });
             true
         } else {
             // AGENT: Trace failed non-blocking acquisition with current owner/depth.
             chaos_log("gkl", || {
                 format!(
-                    "try_enter busy id={} owner={} depth={}",
+                    "try_enter busy id={} owner={} owner_thread={} depth={} caller={}:{}",
                     id,
                     self.holder.load(Ordering::Relaxed),
+                    self.holder_thread_label(),
                     self.depth.load(Ordering::Relaxed),
+                    caller.file(),
+                    caller.line(),
                 )
             });
             false
