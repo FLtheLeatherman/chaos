@@ -245,7 +245,6 @@ pub struct KernLock {
     holder: AtomicUsize,
     depth: AtomicUsize,
     holder_thread: Mutex<Option<thread::ThreadId>>,
-    holder_site: Mutex<Option<(&'static str, u32)>>,
 }
 impl KernLock {
     pub const fn new() -> Self {
@@ -254,7 +253,6 @@ impl KernLock {
             holder: AtomicUsize::new(0),
             depth: AtomicUsize::new(0),
             holder_thread: Mutex::new(None),
-            holder_site: Mutex::new(None),
         }
     }
     // HUMAN
@@ -273,7 +271,7 @@ impl KernLock {
     }
     // AGENT: Keep the acquisition callsite visible in later wait/invalid-release logs.
     fn holder_site_label(&self) -> String {
-        let site = self.holder_site.lock().unwrap();
+        let site = GKL_HOLDER_SITE.lock().unwrap();
         match *site {
             Some((file, line)) => format!("{}:{}", file, line),
             None => "None".to_string(),
@@ -319,7 +317,7 @@ impl KernLock {
             core::hint::spin_loop();
         }
         *self.holder_thread.lock().unwrap() = Some(thread::current().id());
-        *self.holder_site.lock().unwrap() = Some((caller.file(), caller.line()));
+        *GKL_HOLDER_SITE.lock().unwrap() = Some((caller.file(), caller.line()));
         self.holder.store(id, Ordering::Relaxed);
         self.depth.store(1, Ordering::Relaxed);
         // AGENT: Trace successful first-level GKL acquisition.
@@ -393,7 +391,7 @@ impl KernLock {
         self.depth.store(0, Ordering::Relaxed);
         self.flag.store(false, Ordering::Release);
         *self.holder_thread.lock().unwrap() = None;
-        *self.holder_site.lock().unwrap() = None;
+        *GKL_HOLDER_SITE.lock().unwrap() = None;
         // AGENT: Confirm visible unlocked state after release.
         chaos_log("gkl", || "leave released owner=0 depth=0".to_string());
     }
@@ -427,7 +425,7 @@ impl KernLock {
         }
         if self.flag.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
             *self.holder_thread.lock().unwrap() = Some(thread::current().id());
-            *self.holder_site.lock().unwrap() = Some((caller.file(), caller.line()));
+            *GKL_HOLDER_SITE.lock().unwrap() = Some((caller.file(), caller.line()));
             self.holder.store(id, Ordering::Relaxed);
             self.depth.store(1, Ordering::Relaxed);
             // AGENT: Trace successful non-blocking GKL acquisition.
@@ -462,6 +460,8 @@ impl KernLock {
 }
 unsafe impl Send for KernLock {}
 unsafe impl Sync for KernLock {}
+// AGENT: Debug-only owner callsite cache kept outside KernLock to avoid changing its struct layout.
+static GKL_HOLDER_SITE: Mutex<Option<(&'static str, u32)>> = Mutex::new(None);
 pub static GKL: KernLock = KernLock::new();
 
 pub struct ZoneInfo {
