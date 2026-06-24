@@ -260,3 +260,29 @@ pub fn check_access(addr: usize, len: usize) -> bool {
 ## 文档移动
 
 - 已将根目录 `structure.md` 移动到 `docs/structure.md`，用于集中存放项目文档。
+
+## 12. `56e4a65` - advanced-tests-group_01 / GKL 调用统一
+
+- 时间：2026-06-24 17:08:06 +0800
+- 范围：`kernel/src/kernel.rs`、`chaos-tests/tests/custom/`、`chaos-tests/Cargo.toml`、`AGENTS.md`、`docs/TODO.md`
+- 提交信息：`fix: GKL 调用不统一`
+- 统计：95 行新增，23 行删除；代码侧主要修改 `KernLock::try_enter`、`BlockCache::sync_all` 和 `Kernel::tick`
+- 远程测试：advanced test `group_01::adv_scheduler_fs_memory_deadlock_chain` 已通过
+
+主要改动：
+
+- 修复 `KernLock::try_enter` 成功获取 GKL 后没有记录 `holder_thread` 的问题。原先只写入 `holder` 和 `depth`，导致同一宿主线程后续调用 `GKL.enter(...)` 时无法被识别为重入，可能自旋等待自己持有的锁。
+- 将 `BlockCache::sync_all` 改为通过 `GKL.enter(id)` / `GKL.leave()` 管理全局内核锁，不再手写 `GKL.holder`、`GKL.depth` 和 `GKL.flag`。
+- 将 `Kernel::tick` 同样改为统一走 `GKL.enter(id)` / `GKL.leave()`，避免内核 tick 路径在嵌套进入时只按 numeric owner id 判断重入。
+- 新增 `chaos-tests/tests/custom/gkl_regression.rs` 和 `custom` test target，用 basic tests 风格的 `run_with_timeout` 复现两类问题：`tick -> lookup_path -> alloc_pages` 的 scheduler/fs/memory 链路，以及 `try_enter` 后再 `enter` 的同线程重入链路。
+- 补充 `AGENTS.md` 作为仓库 contributor guide，并新增 `docs/TODO.md` 记录后续还需阅读 group_11 原理。
+
+调试背景：
+
+- 隐藏测试名 `adv_scheduler_fs_memory_deadlock_chain` 暗示问题不只是单独的 GKL 单元行为，而是调度、文件系统和内存分配路径组合后形成的跨模块锁链。
+- basic group_01 只覆盖了持有 GKL 时调用 `FramePool::get` 的浅层路径；隐藏测试更可能先持有 GKL，再进入 `Kernel::tick` 这类会访问 CPU 状态和 block cache 的维护路径，之后继续走 fs lookup 和 memory allocation。
+- 旧实现里存在两套 GKL 语义：`KernLock::enter/leave` 通过 `holder_thread` 判断真实宿主线程重入；而 `BlockCache::sync_all` 和 `Kernel::tick` 绕过该接口，直接按传入的 numeric `id` 操作 `holder/depth/flag`。
+- 当同一线程已经持有 GKL，但后续路径用不同 id 进入 `tick` 或 `sync_all` 时，旧代码不会认为这是重入，可能自旋等待自己释放锁。反过来，如果 numeric id 恰好匹配，旧代码又会直接改写 `depth` 并在退出时清空 GKL，可能破坏外层锁的生命周期。
+- `try_enter` 的缺陷与此类似：成功获取锁后没有写 `holder_thread`，使后续同线程 `enter` 无法走重入分支。
+
+整体效果：这次提交把 GKL 获取和释放收敛到统一接口，修复 hidden advanced group_01 中 scheduler/fs/memory 组合路径的死锁风险，同时保留 custom regression tests 作为本地复现入口。

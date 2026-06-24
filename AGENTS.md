@@ -15,7 +15,7 @@ This repository is a Rust-based rCore teaching OS exercise. The main debugging a
 
 ## Coding Style & Naming Conventions
 
-Rust is the primary language. Follow existing Rust formatting with four-space indentation and run `cargo fmt` from the crate you edit when practical. Use descriptive `snake_case` for functions and variables, `CamelCase` for types, and `SCREAMING_SNAKE_CASE` only for true constants. Keep edits to `kernel/src/kernel.rs` readable: rename cryptic identifiers, extract repeated logic into small helpers, and add comments only when they clarify non-obvious synchronization, memory, or scheduling behavior.
+Rust is the primary language. Follow existing Rust formatting with four-space indentation and run `cargo fmt` from the crate you edit when practical. Use descriptive `snake_case` for functions and variables, `CamelCase` for types, and `SCREAMING_SNAKE_CASE` only for true constants. Keep edits to `kernel/src/kernel.rs` readable: rename cryptic identifiers, extract repeated logic into small helpers, and add comments only when they clarify non-obvious synchronization, memory, or scheduling behavior. Mark agent-authored code blocks with `// AGENT` so attribution remains explicit.
 
 ## Testing Guidelines
 
