@@ -1,105 +1,32 @@
 # Chaos Kernel Refactor Notes
 
-本文档记录本轮围绕真实内核构建环境的调查结论。当前目标不是继续调试 `kernel/src/kernel.rs` 的宿主侧模拟逻辑，而是为后续把它拆回真实内核组件前，先恢复 rCore 原项目更接近的工具链边界。
+本文档只保留后续恢复真实 rCore kernel 时可能继续用到的结论。当前仓库同时有两套世界：
 
-## 1. 初始现象
+- `kernel/src/kernel.rs` 是宿主侧 `std` 仿真，用于 `chaos-tests`。
+- `kernel/src/lib.rs` / `kernel/src/main.rs` 是真实 `no_std` kernel 入口。
 
-在当前默认 nightly 下运行：
+后续迁移时要保持二者分离：仿真代码可以从 `kernel.rs` 拆，但真实 kernel 缺失的模块和 crate 应优先恢复 rCore 原有结构。
 
-```bash
-cd kernel && make build ARCH=riscv64
-```
+## 1. 工具链边界
 
-会先遇到两个早期构建错误：
-
-```text
-patching file .../libcore/sync/atomic.rs
-Hunk #1 FAILED at 156.
-Hunk #2 FAILED at 310.
-patch: **** Can't reopen file .../libcore/sync/atomic.rs : No such file or directory
-error: `.json` target specs require -Zjson-target-spec
-```
-
-这两个错误发生在内核源码真正编译之前，说明它们来自旧构建系统和当前 Rust nightly 接口之间的不匹配。
-
-## 2. 原项目工具链线索
-
-继续检查仓库后，发现不同子目录本来就有不同工具链约束：
-
-| 目录 | 证据 | 工具链 |
-| --- | --- | --- |
-| `kernel/` | 根目录 CI 的 build job | `nightly-2020-06-04` |
-| `rboot/` | `rboot/rust-toolchain` 和 rboot 自身 CI | `nightly-2020-06-04` |
-| `user/rust/` | `user/rust/rust-toolchain` 和 user 自身 CI | `nightly-2020-05-01` |
-| `modules/hello_rust/` | README 要求模块和 kernel 使用同一 toolchain | 跟随 `kernel` |
-| `chaos-tests/` | Cargo manifest 使用 edition 2021 | 不能被仓库根目录旧 nightly 影响 |
-
-因此不应该在仓库根目录放一个统一的旧 `rust-toolchain`。更合适的方案是按二进制边界分层：
-
-- `kernel/` 使用 `nightly-2020-06-04`。
-- `rboot/` 继续使用 `nightly-2020-06-04`。
-- `user/rust/` 继续使用 `nightly-2020-05-01`。
-- `modules/hello_rust/` 构建时跟随 kernel 工具链。
-- `chaos-tests/` 继续使用当前足够新的宿主工具链。
-
-## 3. 为什么不保留当前 nightly 迁移
-
-曾尝试过把 `kernel/Makefile` 和 `kernel/targets/*.json` 迁移到当前 nightly：
-
-- 为 custom target 增加 `-Z json-target-spec`。
-- 把 target JSON 里的旧字段更新到当前 rustc schema。
-- 默认跳过 RISC-V `atomic.patch`。
-
-这可以让当前 nightly 越过 Makefile 和 target spec 解析问题，但它偏离了原 rCore CI 环境。更重要的是，`kernel/targets/*.json` 是 rustc 不稳定接口，当前 nightly 的 target spec 格式和 `nightly-2020-06-04` 的格式不兼容。若决定复现原项目构建环境，就应该保留旧 Makefile 和旧 target JSON，而不是混入当前 nightly 迁移层。
-
-所以本轮最终选择：
-
-- 恢复 `kernel/Makefile` 原始行为。
-- 恢复 `kernel/targets/*.json` 原始格式。
-- 新增 `kernel/rust-toolchain`，让 `kernel/` 自动使用原 CI 版本。
-
-## 4. RISC-V AtomicBool Patch 的定位
-
-旧 Makefile 在构建 `riscv32` / `riscv64` 时会执行：
-
-```make
-patch -p0 -N -b \
-    $(sysroot)/lib/rustlib/src/rust/src/libcore/sync/atomic.rs \
-    src/arch/riscv/atomic.patch
-```
-
-这个 patch 是针对 2020 年左右 Rust `core` 源码布局的 workaround。它把 RISC-V 下的 `AtomicBool` 从 1 字节存储改为 4 字节存储并提高对齐，以避开旧工具链对 byte-sized atomic RMW 支持不足的问题。
-
-在当前 nightly 中，`core::sync::atomic` 已经改成新的泛型实现，并且明确保证 `AtomicBool` 与 `bool` 拥有相同 size/alignment。当前 Rust 还在实现层面对 RISC-V 做了专门 emulation，因此旧补丁不再适合当前 nightly。
-
-但在 `nightly-2020-06-04` 下，仓库 CI 原本就是依赖这个 patch 进行 RISC-V 构建。因此回到旧工具链后，保留 Makefile 原有 patch 步骤是更接近原项目的选择。
-
-## 5. 已落地的仓库修改
-
-新增：
+真实 kernel 应使用 rCore 原 CI 年代的工具链：
 
 ```text
-kernel/rust-toolchain
+kernel/                 nightly-2020-06-04
+rboot/                  nightly-2020-06-04
+user/rust/              nightly-2020-05-01
+chaos-tests/            当前宿主工具链
 ```
 
-内容：
+不要在仓库根目录放统一的旧 `rust-toolchain`，否则会影响 `chaos-tests` 的 edition 2021 构建。
+
+`kernel/rust-toolchain` 应为：
 
 ```text
 nightly-2020-06-04
 ```
 
-保留既有：
-
-```text
-rboot/rust-toolchain      nightly-2020-06-04
-user/rust/rust-toolchain  nightly-2020-05-01
-```
-
-`kernel/Makefile` 和 `kernel/targets/*.json` 已恢复到原始旧工具链格式。这样 `cd kernel` 后由 rustup 自动选择 `nightly-2020-06-04`，不会影响仓库根目录下的 `chaos-tests`。
-
-## 6. 本地安装命令
-
-需要安装两个历史工具链：
+需要安装：
 
 ```bash
 rustup toolchain install nightly-2020-06-04 \
@@ -113,11 +40,50 @@ rustup toolchain install nightly-2020-05-01 \
   --component llvm-tools-preview
 ```
 
-`nightly-2020-06-04` 用于 kernel 和 rboot；`nightly-2020-05-01` 用于 `user/rust`。根目录不要设置旧 toolchain。
+## 2. Kernel 构建环境
 
-## 7. Cargo 源配置与原链接验证
+`kernel/build.rs` 会读取 `ARCH` 环境变量：
 
-`nightly-2020-06-04` 附带的 Cargo 版本是 `1.45.0-nightly`。它不支持现代 sparse registry URL，例如：
+```rust
+let _arch: String = std::env::var("ARCH").unwrap();
+```
+
+因此不要只依赖 Makefile 内部默认值。推荐显式传入：
+
+```bash
+cd kernel
+env -u CARGO_TARGET_DIR ARCH=riscv64 make build
+```
+
+如果 `ARCH` 没有传进 Cargo build script，会出现：
+
+```text
+thread 'main' panicked at 'called `Result::unwrap()` on an `Err` value: NotPresent', build.rs:7:25
+```
+
+本地曾经有：
+
+```bash
+export CARGO_TARGET_DIR=/home/istina/assassyn/.sim-runtime-cache
+```
+
+这会让 Chaos 的构建产物写进另一个项目目录，导致报错路径出现 `assassyn`。这不是源码依赖纠缠，而是共享 Cargo target directory。该设置已从 `~/.bashrc` 禁用，并加了：
+
+```bash
+unset CARGO_TARGET_DIR
+```
+
+后续构建时如果仍看到旧路径，说明当前 shell 还继承了旧环境，执行：
+
+```bash
+source ~/.bashrc
+```
+
+或在命令前使用 `env -u CARGO_TARGET_DIR`。
+
+## 3. 旧 Cargo 与 Registry 配置
+
+`nightly-2020-06-04` 附带的 Cargo 是 `1.45.0-nightly`，不支持现代 sparse registry：
 
 ```toml
 [source.crates-io]
@@ -127,21 +93,21 @@ replace-with = "tuna"
 registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
 ```
 
-如果父目录存在这样的 Cargo 配置，旧 Cargo 会在构建 `kernel` 时失败：
+如果父目录有这种配置，旧 Cargo 会失败，例如：
 
 ```text
 failed to resolve address for sparse+https: Name or service not known
 ```
 
-这里的问题不是 rCore 依赖本身，而是旧 Cargo 只认识旧式 git index。按照“直接使用原链接”的要求，验证时使用了官方 crates.io git index：
+旧 Cargo 使用的是 crates.io git index：
 
 ```text
 https://github.com/rust-lang/crates.io-index
 ```
 
-一个容易踩坑的细节是：即使设置 `HOME=/tmp/...` 和 `CARGO_HOME=/tmp/...`，Cargo 仍会沿当前项目真实路径向父目录查找 `.cargo/config` 或 `.cargo/config.toml`。因此在 `/home/istina/chaos/kernel` 下构建时，仍会读到 `/home/istina/.cargo/config.toml`。符号链接到 `/tmp` 也不够，因为 Cargo 会规范化回真实路径。
+注意：Cargo 会沿真实项目路径向父目录查找 `.cargo/config` 或 `.cargo/config.toml`。即使设置 `HOME` 和 `CARGO_HOME`，在 `/home/istina/chaos/kernel` 下构建时仍可能读到 `/home/istina/.cargo/config.toml`。
 
-如果只是验证依赖解析，可以从不位于 `/home/istina` 下面的目录运行 Cargo，并用 `--manifest-path` 指向真实 manifest：
+只验证依赖解析时，可以从 `/tmp` 运行并用 `--manifest-path` 指向 kernel：
 
 ```bash
 cd /tmp
@@ -155,44 +121,194 @@ env -u CARGO_TARGET_DIR \
     --target /home/istina/chaos/kernel/targets/riscv64imac-unknown-none-elf.json
 ```
 
-但 `make build` 本身会在 `kernel/` 目录下调用 Cargo，因此完整 Makefile 验证仍需要隔离父级配置。本轮使用了完整临时副本：
+不建议提交仓库级 `.cargo/config` 来覆盖这个问题；旧 Cargo 会合并父级 source 配置，容易引入新的冲突。
 
-```bash
-cp -a /home/istina/chaos /tmp/chaos-build.<id>/chaos
-cd /tmp/chaos-build.<id>/chaos/kernel
-env -u CARGO_TARGET_DIR \
-  HOME=/tmp/chaos-home-old \
-  CARGO_HOME=/tmp/chaos-home-old/.cargo \
-  RUSTUP_HOME=/home/istina/.rustup \
-  CARGO_NET_GIT_FETCH_WITH_CLI=true \
-  make build ARCH=riscv64
+## 4. RISC-V Atomic Patch
+
+旧 Makefile 在构建 `riscv32` / `riscv64` 时会 patch 旧 Rust `core`：
+
+```make
+patch -p0 -N -b \
+    $(sysroot)/lib/rustlib/src/rust/src/libcore/sync/atomic.rs \
+    src/arch/riscv/atomic.patch
 ```
 
-其中 `CARGO_NET_GIT_FETCH_WITH_CLI=true` 只是让 Cargo 调用系统 `git fetch`，方便确认它确实访问：
+这个 patch 是 2020 年左右 rCore 对 RISC-V byte-sized atomic 的 workaround。回到 `nightly-2020-06-04` 后保留它更接近原项目。
+
+如果本地 rustup toolchain 在只读位置，patch 可能打印：
 
 ```text
-git fetch ... https://github.com/rust-lang/crates.io-index
+Can't create temporary file ... Read-only file system
 ```
 
-不建议在仓库中提交一个 `.cargo/config` 来覆盖该问题。旧 Cargo 会合并父级 `replace-with` 配置；把本地 source 指回 `https://github.com/rust-lang/crates.io-index` 又会和内置 `crates-io` source 冲突。
+当前 Makefile 对该 patch 命令使用了 `@-patch`，失败会被忽略，后续是否真正影响编译要看后续 rustc 错误。
 
-## 8. 当前后续阻塞项
+## 5. `rcore-memory` 是什么
 
-即使工具链恢复正确，当前 checkout 仍缺少真实内核源码依赖：
-
-```text
-failed to read `/tmp/chaos-build.<id>/chaos/crate/memory/Cargo.toml`
-No such file or directory
-```
-
-原因是 [kernel/Cargo.toml](../kernel/Cargo.toml) 中声明：
+`kernel/Cargo.toml` 声明：
 
 ```toml
 rcore-memory = { path = "../crate/memory" }
 ```
 
-但当前仓库没有 `crate/memory`。
+这指向的是 rCore 上游的独立 crate：
 
-此外，[kernel/src/lib.rs](../kernel/src/lib.rs) 声明了 `fs`、`ipc`、`memory`、`process`、`sync`、`trap` 等真实内核模块，而当前 `kernel/src/` 下也缺少这些模块目录。这些属于下一阶段真实内核组件恢复/拆分工作，不是工具链切换可以直接解决的问题。
+```text
+crate/memory/
+```
 
-本轮已经确认：在使用 `nightly-2020-06-04`、保留原 Makefile/targets、并绕过父级 sparse 镜像配置后，`make build ARCH=riscv64` 的下一个真实阻塞点就是缺失的 `../crate/memory`，而不是 toolchain、target JSON 或 RISC-V atomic patch。
+它不是 `kernel/src/memory`。上游同时还有 kernel 侧 wrapper：
+
+```text
+kernel/src/memory.rs
+```
+
+两者职责不同：
+
+- `crate/memory` 提供通用 VM 抽象：地址类型、页表 trait、`MemorySet`、`MemoryAttr`、映射 handler。
+- `kernel/src/memory.rs` 连接真实 kernel：`GlobalFrameAlloc`、`FRAME_ALLOCATOR`、`alloc_frame`、`phys_to_virt`、`copy_from_user`、`MemorySet` 类型别名等。
+
+当前仓库缺的不是一个从 `kernel.rs` 中随便拆出的模块，而是这两层都需要恢复。
+
+## 6. `rcore-memory` 被用到的 API
+
+本地真实 kernel 直接依赖这些 `rcore-memory` 导出：
+
+```rust
+rcore_memory::{PhysAddr, VirtAddr, Page, PAGE_SIZE, VMError}
+rcore_memory::paging::{PageTable, Entry, PageTableExt}
+rcore_memory::memory_set::{MemorySet, MemoryArea, MemoryAttr}
+rcore_memory::memory_set::handler::{
+    AccessType,
+    FrameAllocator,
+    MemoryHandler,
+    Linear,
+    Delay,
+    Shared,
+    SharedGuard,
+    ByFrame,
+    File,
+}
+```
+
+关键调用面：
+
+- 各架构 `arch/*/paging.rs` 实现 `PageTable`、`Entry`、`PageTableExt`。
+- `sys_mmap` 使用 `MemorySet::push`、`pop_with_split`、`find_free_area`。
+- syscall 用户指针检查使用 `check_read_ptr`、`check_write_ptr`、`check_read_array`、`check_write_array`。
+- page fault 入口使用 `handle_page_fault` / `handle_page_fault_ext`。
+- LKM kernel virtual memory 使用 `ByFrame<GlobalFrameAlloc>`。
+- RISC-V page fault 使用 `AccessType::read/write/execute`。
+
+`MemoryAttr` 是 builder 风格：
+
+```rust
+MemoryAttr::default().user().execute().writable()
+MemoryAttr::default().user().readonly()
+MemoryAttr::default().mmio(1)
+```
+
+`MemorySet` 需要的方法包括：
+
+```text
+new
+new_bare
+push
+pop
+pop_with_split
+find_free_area
+iter
+with
+activate
+token
+clear
+translate
+get_page_table_mut
+handle_page_fault
+handle_page_fault_ext
+clone
+```
+
+## 7. `no_std + alloc`
+
+每个 crate 都要自己声明 `no_std`。`kernel` 是 `#![no_std]` 不会自动让依赖 crate 也变成 `no_std`。
+
+如果 `crate/memory/src/lib.rs` 是空文件，Rust 默认会链接 `std`，在 custom target 下会报：
+
+```text
+error[E0463]: can't find crate for `std`
+```
+
+`rcore-memory` 应至少有：
+
+```rust
+#![no_std]
+
+extern crate alloc;
+```
+
+`extern crate alloc;` 的作用是在 `no_std` crate 中引入堆分配类型。`core` 自动可用，但 `Vec`、`Box`、`String`、`Arc`、`BTreeMap` 来自 `alloc`：
+
+```rust
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use alloc::sync::Arc;
+use alloc::collections::BTreeMap;
+```
+
+上游 `rcore-memory` 使用 `Vec<MemoryArea>`、`Box<dyn MemoryHandler>`、`Arc<Mutex<_>>` 和 `BTreeMap`，所以它是 `no_std + alloc`，不是纯 `core`。
+
+## 8. `kernel.rs` 中的 `VmRegion`
+
+`kernel/src/kernel.rs` 中的 `VmRegion` / `VmMap` / `AddrSpace` 和真实 VM 概念相关，但它们属于宿主侧仿真：
+
+```rust
+pub struct VmRegion {
+    pub base: usize,
+    pub len: usize,
+    pub flags: u32,
+    pub offset: usize,
+    pub tag: u16,
+    pub ref_count: AtomicUsize,
+}
+```
+
+对应关系大致是：
+
+```text
+VmRegion.base + len        ~= MemoryArea.start_addr/end_addr
+VmRegion.flags             ~= MemoryAttr
+VmMap.regions              ~= MemorySet.areas
+AddrSpace                  ~= 简化版进程地址空间
+```
+
+但它不能直接替代 `rcore-memory::MemoryArea`，因为真实 `MemoryArea` 还需要：
+
+- `attr: MemoryAttr`
+- `handler: Box<dyn MemoryHandler>`
+- `map` / `unmap` / `clone_map`
+- `handle_page_fault`
+- 和真实 `PageTable` / `Entry` trait 交互
+
+`kernel.rs` 的 `FramePool`、`PgFrame`、`AddrSpace::handle_cow_fault` 是测试用的简化 COW/物理页模型。它适合拆到 host-only simulation 模块，不适合直接放进真实 `kernel/src/memory.rs`。
+
+## 9. 当前恢复顺序
+
+建议顺序：
+
+1. 恢复 `crate/memory`，优先按 rCore 上游结构恢复，而不是从 `kernel.rs` 拆。
+2. 恢复 `kernel/src/memory.rs` wrapper，让 `crate::memory::*` 引用先成立。
+3. 再恢复 `sync`、`process`、`fs`、`ipc`、`trap` 等 `kernel/src/lib.rs` 已声明但当前缺失的真实模块。
+4. 最后再把 `kernel.rs` 的仿真子系统拆到 host-only 兼容层，保持 `chaos-tests` 继续工作。
+
+当前空壳 `rcore-memory` 加上 `#![no_std]` 后，可以越过 `can't find crate for std`，但后续会继续报缺：
+
+```text
+rcore_memory::PAGE_SIZE
+rcore_memory::Page
+rcore_memory::paging
+rcore_memory::memory_set
+rcore_memory::VMError
+```
+
+这说明下一步应补完整 `rcore-memory` API，而不是继续处理 `std`。
