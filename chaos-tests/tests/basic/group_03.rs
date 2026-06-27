@@ -1,5 +1,5 @@
 use chaos_tests::*;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 fn run_with_timeout<F: FnOnce() + Send + 'static>(f: F, ms: u64) -> bool {

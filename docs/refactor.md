@@ -312,3 +312,76 @@ rcore_memory::VMError
 ```
 
 这说明下一步应补完整 `rcore-memory` API，而不是继续处理 `std`。
+
+## 10. 已完成：最小 `sync::Mutex` 与 `EventBus` 迁出
+
+本轮只做了 `sync` 的最小迁移，不恢复 rCore 上游完整 `SpinLock` / `SpinNoIrqLock` 框架。
+
+### 10.1 `kernel/src/sync/mutex.rs`
+
+新增了一个接近 `std::sync::Mutex` 调用形状的最小互斥锁：
+
+```rust
+Mutex::new(value)
+mutex.lock().unwrap()
+mutex.try_lock()
+MutexGuard: Deref + DerefMut
+```
+
+当前实现是基于 `AtomicBool + UnsafeCell` 的简单自旋互斥。它的目的不是成为最终真实 kernel 同步原语，而是先把 `kernel.rs` 中对 `std::sync::Mutex` 的依赖替换成仓库内实现，并让 `chaos-tests` 继续通过。
+
+需要注意：
+
+- 没有实现 poisoning 语义，`LockResult` 只是为了兼容 `.lock().unwrap()` 调用形状。
+- 没有实现 `SpinLock`、`SpinNoIrqLock`、`MutexSupport` 等 rCore 完整抽象。
+- `chaos-tests/tests/basic/group_03.rs` 已改为通过 `chaos_tests::*` 使用这个 `Mutex`，避免再把 `std::sync::Mutex` 传入 `SyncQueue`。
+
+### 10.2 `kernel/src/sync/event_bus.rs`
+
+`kernel.rs` 中原来的 `EventBus` 已迁出到 `kernel/src/sync/event_bus.rs`，保持原始模型：
+
+```rust
+EventFlag
+EventCallback
+EventBus { flags, callbacks }
+EventBus::make / set / clear / change / sub / cb_len
+wait_ev
+```
+
+迁出时刻意没有加入 `wait_for_event`、async future 等额外机制。当前原则是保持行为等价，先让单体仿真少依赖内联定义。
+
+### 10.3 `kernel.rs` 兼容入口
+
+`chaos-tests/src/lib.rs` 是指向 `kernel/src/kernel.rs` 的 symlink；测试编译时，`kernel.rs` 会作为 `chaos-tests` 的 crate root，而不是通过 `kernel/src/lib.rs` 进入。因此 `kernel.rs` 里仍需要显式声明外部模块：
+
+```rust
+#[path = "../../kernel/src/sync/mod.rs"]
+pub mod sync;
+pub use self::sync::{wait_ev, EventBus, EventCallback, EventFlag, Mutex};
+```
+
+这个路径从两个视角都能指向同一个真实文件：
+
+```text
+chaos-tests/src/../../kernel/src/sync/mod.rs
+kernel/src/../../kernel/src/sync/mod.rs
+```
+
+等后续 `chaos-tests` 不再把 `kernel.rs` 当作 symlink crate root，而是通过正常 crate/module 结构接入时，可以去掉这个 `#[path]`。
+
+### 10.4 验证
+
+当前验收命令：
+
+```bash
+cd chaos-tests
+cargo test --test basic
+cargo test --test custom -- --test-threads=1
+```
+
+结果：
+
+```text
+basic: 33 passed
+custom: 3 passed
+```

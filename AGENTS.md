@@ -56,7 +56,7 @@ Rust is the primary language. Follow existing Rust formatting with four-space in
 Keep code comments consistent with the current repository:
 
 - Use concise line comments for non-obvious synchronization, memory, scheduling, trap, or ABI behavior.
-- Preserve the existing attribution style. Agent-authored code comments should use `// AGENT:`; human-authored markers should remain `// HUMAN` where already present.
+- Preserve the existing attribution style. Any agent-authored comment added to code must start with `// AGENT:`; use this especially for compatibility layers, migration boundaries, temporary shims, test hooks, and non-obvious behavior introduced by an agent. Human-authored markers should remain `// HUMAN` where already present.
 - Do not add broad narrative comments, decorative section banners, or bilingual rewrites of existing comments.
 - Temporary instrumentation should be gated or easy to disable. For simulation logging, prefer the existing `CHAOS_LOG` flow and `println!`; default GKL logging can be silenced with `CHAOS_LOG=0`.
 

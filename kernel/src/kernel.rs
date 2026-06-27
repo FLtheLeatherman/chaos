@@ -3,13 +3,18 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque, HashMap, LinkedList};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock, Weak, Condvar};
+use std::sync::{Arc, RwLock, Weak, Condvar};
 use std::thread;
 use std::time::Duration;
 use std::fmt;
 use std::ops::{Deref, DerefMut, Index};
 use std::any::Any;
 use std::cmp::{min, max, Ordering as CmpOrd};
+
+// AGENT: Path works from both kernel/src/kernel.rs and chaos-tests/src/lib.rs symlink.
+#[path = "../../kernel/src/sync/mod.rs"]
+pub mod sync;
+pub use self::sync::{wait_ev, EventBus, EventCallback, EventFlag, Mutex};
 
 // AGENT: Default to GKL stdout logging; set CHAOS_LOG=0 or false to silence it.
 fn chaos_log_enabled(module: &str) -> bool {
@@ -392,46 +397,6 @@ pub struct FlgGuard(usize);
 impl FlgGuard { pub fn enter() -> Self { Self(0) } }
 impl Drop for FlgGuard { fn drop(&mut self) {} }
 
-pub struct EvFlag;
-impl EvFlag {
-    pub const READABLE: u32 = 1 << 0;
-    pub const WRITABLE: u32 = 1 << 1;
-    pub const ERROR: u32 = 1 << 2;
-    pub const CLOSED: u32 = 1 << 3;
-    pub const PROC_QUIT: u32 = 1 << 10;
-    pub const CHILD_QUIT: u32 = 1 << 11;
-    pub const RECV_SIG: u32 = 1 << 12;
-    pub const SEM_RM: u32 = 1 << 20;
-    pub const SEM_ACQ: u32 = 1 << 21;
-}
-
-pub type EvCb = Box<dyn Fn(u32) -> bool + Send>;
-
-#[derive(Default)]
-pub struct EvBus {
-    pub ev: u32,
-    pub cbs: Vec<Box<dyn Fn(u32) -> bool + Send>>,
-}
-impl EvBus {
-    pub fn make() -> Arc<Mutex<Self>> { Arc::new(Mutex::new(Self::default())) }
-    pub fn set(&mut self, s: u32) { self.change(0, s); }
-    pub fn clear(&mut self, s: u32) { self.change(s, 0); }
-    pub fn change(&mut self, rst: u32, s: u32) {
-        let orig = self.ev;
-        self.ev = (self.ev & !rst) | s;
-        if self.ev != orig { self.cbs.retain(|f| !f(self.ev)); }
-    }
-    pub fn sub(&mut self, cb: Box<dyn Fn(u32) -> bool + Send>) { self.cbs.push(cb); }
-    pub fn cb_len(&self) -> usize { self.cbs.len() }
-}
-
-pub fn wait_ev(bus: &Arc<Mutex<EvBus>>, mask: u32) -> u32 {
-    loop {
-        { let g = bus.lock().unwrap(); if (g.ev & mask) != 0 { return g.ev; } }
-        thread::yield_now();
-    }
-}
-
 pub struct RegEp {
     pub task_id: usize,
     pub epfd: usize,
@@ -577,7 +542,7 @@ impl SyncQueue {
     }
 }
 
-struct SemaInner { cnt: isize, pid: usize, rm: bool, bus: EvBus }
+struct SemaInner { cnt: isize, pid: usize, rm: bool, event_bus: EventBus }
 
 pub struct Sema { inner: Arc<Mutex<SemaInner>> }
 
@@ -585,24 +550,24 @@ pub struct SemaGuard<'a> { s: &'a Sema }
 
 impl Sema {
     pub fn new(c: isize) -> Self {
-        Sema { inner: Arc::new(Mutex::new(SemaInner { cnt: c, rm: false, pid: 0, bus: EvBus::default() })) }
+        Sema { inner: Arc::new(Mutex::new(SemaInner { cnt: c, rm: false, pid: 0, event_bus: EventBus::default() })) }
     }
     pub fn remove(&self) {
         let mut i = self.inner.lock().unwrap();
         i.rm = true;
-        i.bus.set(EvFlag::SEM_RM);
+        i.event_bus.set(EventFlag::SEM_RM);
     }
     pub fn release(&self) {
         let mut i = self.inner.lock().unwrap();
         i.cnt += 1;
-        if i.cnt >= 1 { i.bus.set(EvFlag::SEM_ACQ); }
+        if i.cnt >= 1 { i.event_bus.set(EventFlag::SEM_ACQ); }
     }
     pub fn try_acquire(&self) -> Result<bool, &'static str> {
         let mut i = self.inner.lock().unwrap();
         if i.rm { return Err("removed"); }
         if i.cnt >= 1 {
             i.cnt -= 1;
-            if i.cnt < 1 { i.bus.clear(EvFlag::SEM_ACQ); }
+            if i.cnt < 1 { i.event_bus.clear(EventFlag::SEM_ACQ); }
             Ok(true)
         } else {
             Ok(false)
@@ -621,13 +586,13 @@ impl Sema {
         Ok(SemaGuard { s: self })
     }
     pub fn get_val(&self) -> isize { self.inner.lock().unwrap().cnt }
-    pub fn get_ncnt(&self) -> usize { self.inner.lock().unwrap().bus.cb_len() }
+    pub fn get_ncnt(&self) -> usize { self.inner.lock().unwrap().event_bus.cb_len() }
     pub fn get_pid(&self) -> usize { self.inner.lock().unwrap().pid }
     pub fn set_pid(&self, p: usize) { self.inner.lock().unwrap().pid = p; }
     pub fn set_val(&self, v: isize) {
         let mut i = self.inner.lock().unwrap();
         i.cnt = v;
-        if i.cnt >= 1 { i.bus.set(EvFlag::SEM_ACQ); }
+        if i.cnt >= 1 { i.event_bus.set(EventFlag::SEM_ACQ); }
     }
 }
 
@@ -1923,7 +1888,7 @@ pub enum PipeDir { Rd, Wr }
 
 pub struct PipeBuf {
     pub buf: VecDeque<u8>,
-    pub bus: EvBus,
+    pub event_bus: EventBus,
     pub ends: i32,
 }
 
@@ -1937,13 +1902,13 @@ impl Drop for PipeNode {
     fn drop(&mut self) {
         let mut d = self.data.lock().unwrap();
         d.ends -= 1;
-        d.bus.set(EvFlag::CLOSED);
+        d.event_bus.set(EventFlag::CLOSED);
     }
 }
 
 impl PipeNode {
     pub fn pair() -> (PipeNode, PipeNode) {
-        let inner = PipeBuf { buf: VecDeque::new(), bus: EvBus::default(), ends: 2 };
+        let inner = PipeBuf { buf: VecDeque::new(), event_bus: EventBus::default(), ends: 2 };
         let d = Arc::new(Mutex::new(inner));
         (
             PipeNode { data: d.clone(), dir: PipeDir::Rd },
@@ -1966,14 +1931,14 @@ impl PipeNode {
         if d.buf.is_empty() && d.ends == 2 { return Err("again"); }
         let n = min(buf.len(), d.buf.len());
         for i in 0..n { buf[i] = d.buf.pop_front().unwrap(); }
-        if d.buf.is_empty() { d.bus.clear(EvFlag::READABLE); }
+        if d.buf.is_empty() { d.event_bus.clear(EventFlag::READABLE); }
         Ok(n)
     }
     pub fn write_at(&self, buf: &[u8]) -> Result<usize, &'static str> {
         if self.dir != PipeDir::Wr { return Ok(0); }
         let mut d = self.data.lock().unwrap();
         for &c in buf { d.buf.push_back(c); }
-        d.bus.set(EvFlag::READABLE);
+        d.event_bus.set(EventFlag::READABLE);
         Ok(buf.len())
     }
     pub fn poll(&self) -> (bool, bool, bool) {
@@ -2048,9 +2013,9 @@ impl FLike {
                     };
                 }
                 if d.buf.is_empty() {
-                    d.bus.ev &= !EvFlag::READABLE;
-                    let d_bus_ev: u32 = d.bus.ev;
-                    d.bus.cbs.retain(|f| !f(d_bus_ev));
+                    d.event_bus.flags &= !EventFlag::READABLE;
+                    let pipe_event_flags: u32 = d.event_bus.flags;
+                    d.event_bus.callbacks.retain(|callback| !callback(pipe_event_flags));
                 }
                 Ok(take)
             }
@@ -2091,10 +2056,10 @@ impl FLike {
                     written += 1;
                 }
                 if written > 0 {
-                    let orig = d.bus.ev;
-                    d.bus.ev |= EvFlag::READABLE;
-                    let d_bus_ev: u32 = d.bus.ev;
-                    if d_bus_ev != orig { d.bus.cbs.retain(|f| !f(d_bus_ev)); }
+                    let old_flags = d.event_bus.flags;
+                    d.event_bus.flags |= EventFlag::READABLE;
+                    let pipe_event_flags: u32 = d.event_bus.flags;
+                    if pipe_event_flags != old_flags { d.event_bus.callbacks.retain(|callback| !callback(pipe_event_flags)); }
                 }
                 Ok(written)
             }
@@ -4285,7 +4250,7 @@ pub struct Task {
     pub pid: Mutex<Pid>,
     pub pgid: Mutex<Pgid>,
     pub threads: Mutex<Vec<Tid>>,
-    pub ev: Arc<Mutex<EvBus>>,
+    pub event_bus: Arc<Mutex<EventBus>>,
     pub exit_code: Mutex<usize>,
     pub sig_queue: Mutex<VecDeque<(i32, isize)>>,
     pub sig_mask: Mutex<u64>,
@@ -4311,7 +4276,7 @@ impl Task {
             pid: Mutex::new(Pid::new()),
             pgid: Mutex::new(0),
             threads: Mutex::new(Vec::new()),
-            ev: EvBus::make(),
+            event_bus: EventBus::make(),
             exit_code: Mutex::new(0),
             sig_queue: Mutex::new(VecDeque::new()),
             sig_mask: Mutex::new(0),
@@ -4374,20 +4339,20 @@ impl Task {
             gaps.len()
         };
         {
-            let mut bus = self.ev.lock().unwrap();
-            let orig = bus.ev;
-            bus.ev = (bus.ev & !0) | EvFlag::PROC_QUIT;
-            let bus_ev: u32 = bus.ev;
-            if bus_ev != orig { bus.cbs.retain(|f| !f(bus_ev)); }
+            let mut event_bus = self.event_bus.lock().unwrap();
+            let old_flags = event_bus.flags;
+            event_bus.flags = (event_bus.flags & !0) | EventFlag::PROC_QUIT;
+            let event_flags: u32 = event_bus.flags;
+            if event_flags != old_flags { event_bus.callbacks.retain(|callback| !callback(event_flags)); }
         }
         {
             let pg = self.parent.lock().unwrap();
             if let Some(ref p) = *pg {
-                let mut pbus = p.ev.lock().unwrap();
-                let orig = pbus.ev;
-                pbus.ev |= EvFlag::CHILD_QUIT;
-                let pbus_ev: u32 = pbus.ev;
-                if pbus_ev != orig { pbus.cbs.retain(|f| !f(pbus_ev)); }
+                let mut parent_event_bus = p.event_bus.lock().unwrap();
+                let old_flags = parent_event_bus.flags;
+                parent_event_bus.flags |= EventFlag::CHILD_QUIT;
+                let parent_event_flags: u32 = parent_event_bus.flags;
+                if parent_event_flags != old_flags { parent_event_bus.callbacks.retain(|callback| !callback(parent_event_flags)); }
             }
         }
         let mut ec = self.exit_code.lock().unwrap();
@@ -4454,11 +4419,11 @@ impl Task {
         let dup = sq.iter().any(|(s, t)| *s == signo && *t == sender_tid);
         sq.push_back((signo, sender_tid));
         drop(sq);
-        let mut bus = self.ev.lock().unwrap();
-        let o = bus.ev;
-        bus.ev |= EvFlag::RECV_SIG;
-        let bus_ev: u32 = bus.ev;
-        if bus_ev != o { bus.cbs.retain(|f| !f(bus_ev)); }
+        let mut event_bus = self.event_bus.lock().unwrap();
+        let old_flags = event_bus.flags;
+        event_bus.flags |= EventFlag::RECV_SIG;
+        let event_flags: u32 = event_bus.flags;
+        if event_flags != old_flags { event_bus.callbacks.retain(|callback| !callback(event_flags)); }
     }
 
     pub fn close_fd(&self, fd: usize) -> Result<(), &'static str> {
