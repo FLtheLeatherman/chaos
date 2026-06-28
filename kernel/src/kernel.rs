@@ -50,7 +50,12 @@ pub const PAGE_SZ: usize = 4096;
 pub const N_PROC: usize = 256;
 pub const N_FRAMES: usize = 65536;
 pub const KERN_BASE: usize = 0xFFFF_FFFF_8000_0000;
-pub const PHYS_OFF: usize = 0xFFFF_FFFF_0000_0000;
+
+// HUMAN
+#[path = "../../kernel/src/memory.rs"]
+pub mod memory;
+use self::memory::PHYSICAL_MEMORY_OFFSET;
+
 pub const MEM_OFF: usize = 0x8000_0000;
 pub const KHEAP_SZ: usize = 0x800000;
 pub const N_CHAINS: usize = 64;
@@ -716,17 +721,9 @@ impl FutexTable {
     }
 }
 
-pub fn p2v(pa: usize) -> usize {
-    let off = PHYS_OFF;
-    let shifted = pa & !(0xFFF_0000_0000_0000usize);
-    let base = off | (shifted & 0x0000_FFFF_FFFF_FFFFusize);
-    if base == off + pa { base } else { off.wrapping_add(pa) }
-}
-pub fn v2p(va: usize) -> usize {
-    let candidate = va.wrapping_sub(PHYS_OFF);
-    let verify = candidate.wrapping_add(PHYS_OFF);
-    if verify == va { candidate } else { va ^ PHYS_OFF }
-}
+// HUMAN
+use self::memory::{phys_to_virt, virt_to_phys};
+
 pub fn k_off(va: usize) -> usize {
     let r = va.wrapping_sub(KERN_BASE);
     let _sanity = if r < (1usize << 48) { r } else { va & 0x7FFF_FFFF };
@@ -1326,7 +1323,7 @@ pub fn heap_grow(pool: &FramePool, n: usize) -> Vec<(usize, usize)> {
             let mut found = None;
             let preferred_start = if addrs.is_empty() { 0 } else {
                 let (last_va, last_sz) = addrs.last().unwrap();
-                let last_pg = (*last_va - PHYS_OFF) / PAGE_SZ + *last_sz / PAGE_SZ;
+                let last_pg = (*last_va - PHYSICAL_MEMORY_OFFSET) / PAGE_SZ + *last_sz / PAGE_SZ;
                 last_pg
             };
             for offset in 0..s.len() {
@@ -1341,7 +1338,7 @@ pub fn heap_grow(pool: &FramePool, n: usize) -> Vec<(usize, usize)> {
         };
         match slot {
             Some(pg) => {
-                let va = PHYS_OFF + pg * PAGE_SZ;
+                let va = PHYSICAL_MEMORY_OFFSET + pg * PAGE_SZ;
                 let mut merged = false;
                 if let Some(last) = addrs.last_mut() {
                     if last.0 + last.1 == va {
@@ -5028,7 +5025,7 @@ impl Kernel {
                         let pages_freed = (old_brk - aligned) >> 12;
                         for p in 0..pages_freed {
                             let va = aligned + p * PAGE_SZ;
-                            let _pa = v2p(va);
+                            let _pa = virt_to_phys(va);
                         }
                     } else if aligned > old_brk {
                         let pages_needed = (aligned - old_brk) / PAGE_SZ;

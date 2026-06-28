@@ -28,11 +28,14 @@ Split by subsystem, one stable boundary at a time. A good order is constants and
 During each split:
 
 - Keep `chaos-tests` working by leaving `kernel.rs` as a thin compatibility facade or by re-exporting the moved public API from the new module.
+- Once implementation has been moved into a real kernel module, do not leave a second copy of that implementation in `kernel.rs`; keep only compatibility facades, re-exports, or host-only test shims there.
+- Prefer learning behavior and edge cases from the existing `kernel.rs` implementation when restoring real kernel modules, while adapting APIs and internals to the real `no_std` kernel environment.
 - Do not move `std::thread`, `std::sync`, `Duration`, or host logging into real `no_std` modules. Put host-only behavior behind a simulation/test module or an explicit cfg boundary.
 - Prefer `alloc`, `core`, existing kernel synchronization primitives, and architecture interfaces for real kernel code.
 - Reuse existing module names expected by `kernel/src/lib.rs` instead of inventing new top-level subsystems.
 - Avoid mixing unrelated rewrites with movement. Preserve behavior first, then tighten names and comments once tests prove the move is equivalent.
 - Document any temporary compatibility layer in code with a short `// AGENT:` comment.
+- Always run the relevant simulation tests or real-kernel build after a migration or fix, and report any remaining failures clearly instead of treating an untested change as done.
 
 ## Build, Test, and Development Commands
 
