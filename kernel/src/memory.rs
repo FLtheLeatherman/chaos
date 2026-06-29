@@ -1,4 +1,5 @@
-pub const PHYSICAL_MEMORY_OFFSET: usize = 0xFFFF_FFFF_0000_0000;
+// HUMAN: from riscv64
+pub const PHYSICAL_MEMORY_OFFSET: usize = 0xFFFF_FFFF_C000_0000;
 
 // HUMAN: v2p & p2v
 pub fn phys_to_virt(pa: usize) -> usize {
