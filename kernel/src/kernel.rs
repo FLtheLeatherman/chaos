@@ -14,7 +14,7 @@ use std::cmp::{min, max, Ordering as CmpOrd};
 // AGENT: Path works from both kernel/src/kernel.rs and chaos-tests/src/lib.rs symlink.
 #[path = "../../kernel/src/sync/mod.rs"]
 pub mod sync;
-pub use self::sync::{wait_ev, EventBus, EventCallback, EventFlag, Mutex};
+pub use self::sync::{wait_event, EventBus, EventCallback, EventFlag, Mutex};
 
 // AGENT: Default to GKL stdout logging; set CHAOS_LOG=0 or false to silence it.
 fn chaos_log_enabled(module: &str) -> bool {
@@ -501,7 +501,7 @@ impl SyncQueue {
         woken
     }
     pub fn pending(&self) -> usize { let q = self.q.lock(); q.q.len() }
-    pub fn wait_ev<T>(&self, g: &Mutex<T>, mut cond: impl FnMut(&T) -> Option<bool>) -> bool {
+    pub fn wait_event<T>(&self, g: &Mutex<T>, mut cond: impl FnMut(&T) -> Option<bool>) -> bool {
         loop {
             { let d = g.lock(); if let Some(r) = cond(&d) { return r; } }
             { let mut q = self.q.lock(); q.q.push_back(thread::current()); }

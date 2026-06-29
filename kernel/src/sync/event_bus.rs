@@ -58,7 +58,7 @@ impl EventBus {
     }
 }
 
-pub fn wait_ev(event_bus: &Arc<Mutex<EventBus>>, mask: u32) -> u32 {
+pub fn wait_event(event_bus: &Arc<Mutex<EventBus>>, mask: u32) -> u32 {
     loop {
         let flags = {
             let event_bus = event_bus.lock();
