@@ -592,6 +592,10 @@ dependencies = [
 [[package]]
 name = "rcore-memory"
 version = "0.1.0"
+dependencies = [
+ "log",
+ "spin",
+]
 
 [[package]]
 name = "redox_syscall"
