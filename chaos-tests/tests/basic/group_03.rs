@@ -41,7 +41,7 @@ fn basic_spurious_wakeup_no_recheck() {
     q.broadcast();
 
     let returned = consumer.join().unwrap();
-    let actual = *m.lock().unwrap();
+    let actual = *m.lock();
 
     assert_eq!(returned, actual);
 }
@@ -63,7 +63,7 @@ fn basic_producer_consumer_single() {
         });
 
         std::thread::yield_now();
-        *m_c.lock().unwrap() = Some(42);
+        *m_c.lock() = Some(42);
         q_c.signal();
 
         consumer.join().unwrap();

@@ -14,7 +14,7 @@ fn run_with_timeout<F: FnOnce() + Send + 'static>(f: F, ms: u64) -> bool {
 fn basic_fork_exec_workload() {
     let kern = Kernel::new(64);
     kern.proc_init();
-    let root = kern.tasks.root.lock().unwrap().clone().unwrap();
+    let root = kern.tasks.root.lock().clone().unwrap();
 
     let child = kern.tasks.fork_task(&root);
 
@@ -31,7 +31,7 @@ fn basic_fork_exec_workload() {
     let cow_result = sp.fault(&kern.pool, &src);
     assert!(cow_result.is_ok());
 
-    let parent_guard = child.parent.lock().unwrap();
+    let parent_guard = child.parent.lock();
     assert!(parent_guard.is_some());
     assert_eq!(parent_guard.as_ref().unwrap().id(), root.id());
     drop(parent_guard);

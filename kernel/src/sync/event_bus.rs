@@ -1,7 +1,6 @@
-#[cfg(target_os = "none")]
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
-#[cfg(not(target_os = "none"))]
-use std::{boxed::Box, sync::Arc, thread, vec::Vec};
+extern crate alloc;
+
+use self::alloc::{boxed::Box, sync::Arc, vec::Vec};
 
 use super::mutex::Mutex;
 
@@ -61,7 +60,10 @@ impl EventBus {
 
 pub fn wait_ev(event_bus: &Arc<Mutex<EventBus>>, mask: u32) -> u32 {
     loop {
-        let flags = event_bus.lock().unwrap().flags;
+        let flags = {
+            let event_bus = event_bus.lock();
+            event_bus.flags
+        };
         if (flags & mask) != 0 {
             return flags;
         }
@@ -69,15 +71,9 @@ pub fn wait_ev(event_bus: &Arc<Mutex<EventBus>>, mask: u32) -> u32 {
     }
 }
 
-#[cfg(target_os = "none")]
 fn relax() {
     #[allow(deprecated)]
     {
         core::sync::atomic::spin_loop_hint();
     }
-}
-
-#[cfg(not(target_os = "none"))]
-fn relax() {
-    thread::yield_now();
 }

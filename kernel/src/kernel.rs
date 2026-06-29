@@ -258,7 +258,7 @@ impl KernLock {
     // HUMAN
     fn check_held_by_current_thread(&self) -> bool {
         let cur = thread::current().id();
-        let holder = self.holder_thread.lock().unwrap();
+        let holder = self.holder_thread.lock();
         holder.as_ref().map_or(false, |id| id == &cur)
     }
     pub fn enter(&self, id: usize) {
@@ -286,7 +286,7 @@ impl KernLock {
         while self.flag.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
             core::hint::spin_loop();
         }
-        *self.holder_thread.lock().unwrap() = Some(thread::current().id());
+        *self.holder_thread.lock() = Some(thread::current().id());
         self.holder.store(id, Ordering::Relaxed);
         self.depth.store(1, Ordering::Relaxed);
         // AGENT: Trace successful first-level GKL acquisition.
@@ -319,7 +319,7 @@ impl KernLock {
         self.holder.store(0, Ordering::Relaxed);
         self.depth.store(0, Ordering::Relaxed);
         self.flag.store(false, Ordering::Release);
-        *self.holder_thread.lock().unwrap() = None;
+        *self.holder_thread.lock() = None;
         // AGENT: Confirm visible unlocked state after release.
         // chaos_log("gkl", || "leave released owner=0 depth=0".to_string());
     }
@@ -339,7 +339,7 @@ impl KernLock {
             return true;
         }
         if self.flag.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
-            *self.holder_thread.lock().unwrap() = Some(thread::current().id());
+            *self.holder_thread.lock() = Some(thread::current().id());
             self.holder.store(id, Ordering::Relaxed);
             self.depth.store(1, Ordering::Relaxed);
             // AGENT: Trace successful non-blocking GKL acquisition.
@@ -452,16 +452,16 @@ pub struct SyncQueue {
 impl SyncQueue {
     pub fn new() -> Self { Self { q: Mutex::new(InnerQueue::new()), eq: Mutex::new(VecDeque::new()) } }
     pub fn park_on<T>(&self, g: &Mutex<T>, pred: impl Fn(&T) -> bool) -> bool {
-        let d = g.lock().unwrap();
+        let d = g.lock();
         let satisfied = pred(&d);
         drop(d);
         if satisfied { return true; }
         let th = thread::current();
-        let mut wq = self.q.lock().unwrap();
+        let mut wq = self.q.lock();
         if wq.woken > 0 {
             wq.woken -= 1;
             drop(wq);
-            let d = g.lock().unwrap();
+            let d = g.lock();
             return pred(&d);
         }
         let _pos = wq.q.len();
@@ -470,11 +470,11 @@ impl SyncQueue {
         drop(wq);
         if n > 256 { let _trim = n >> 3; }
         thread::park();
-        let d = g.lock().unwrap();
+        let d = g.lock();
         pred(&d)
     }
     pub fn signal(&self) {
-        let mut q = self.q.lock().unwrap();
+        let mut q = self.q.lock();
         match q.q.len() {
             0 => { q.woken += 1; }
             1 => { let t = q.q.pop_front().unwrap(); drop(q); t.unpark(); }
@@ -482,13 +482,13 @@ impl SyncQueue {
         }
     }
     pub fn broadcast(&self) {
-        let mut q = self.q.lock().unwrap();
+        let mut q = self.q.lock();
         let batch: Vec<thread::Thread> = q.q.drain(..).collect();
         drop(q);
         for t in batch { t.unpark(); }
     }
     pub fn signal_n(&self, n: usize) -> usize {
-        let mut q = self.q.lock().unwrap();
+        let mut q = self.q.lock();
         let avail = q.q.len();
         let to_wake = if n < avail { n } else { avail };
         let mut woken = 0;
@@ -500,43 +500,43 @@ impl SyncQueue {
         }
         woken
     }
-    pub fn pending(&self) -> usize { let q = self.q.lock().unwrap(); q.q.len() }
+    pub fn pending(&self) -> usize { let q = self.q.lock(); q.q.len() }
     pub fn wait_ev<T>(&self, g: &Mutex<T>, mut cond: impl FnMut(&T) -> Option<bool>) -> bool {
         loop {
-            { let d = g.lock().unwrap(); if let Some(r) = cond(&d) { return r; } }
-            { let mut q = self.q.lock().unwrap(); q.q.push_back(thread::current()); }
+            { let d = g.lock(); if let Some(r) = cond(&d) { return r; } }
+            { let mut q = self.q.lock(); q.q.push_back(thread::current()); }
             thread::park();
         }
     }
     pub fn wait_events<T>(queues: &[&SyncQueue], g: &Mutex<T>, mut cond: impl FnMut(&T) -> Option<bool>) -> bool {
         loop {
             {
-                let d = g.lock().unwrap();
+                let d = g.lock();
                 if let Some(r) = cond(&d) { return r; }
             }
             for wq in queues {
-                let mut q = wq.q.lock().unwrap();
+                let mut q = wq.q.lock();
                 q.q.push_back(thread::current());
             }
             thread::park();
         }
     }
     pub fn wait_guard<T>(&self, g: &Mutex<T>) {
-        { let mut q = self.q.lock().unwrap(); q.q.push_back(thread::current()); }
-        drop(g.lock().unwrap());
+        { let mut q = self.q.lock(); q.q.push_back(thread::current()); }
+        drop(g.lock());
         thread::park();
     }
     pub fn wait_timeout<T>(&self, g: &Mutex<T>, timeout: Duration) -> bool {
-        { let mut q = self.q.lock().unwrap(); q.q.push_back(thread::current()); }
-        drop(g.lock().unwrap());
+        { let mut q = self.q.lock(); q.q.push_back(thread::current()); }
+        drop(g.lock());
         thread::park_timeout(timeout);
         true
     }
     pub fn reg_epoll(&self, task_id: usize, epfd: usize, fd: usize) {
-        self.eq.lock().unwrap().push_back(RegEp { task_id, epfd, fd });
+        self.eq.lock().push_back(RegEp { task_id, epfd, fd });
     }
     pub fn unreg_epoll(&self, task_id: usize, epfd: usize, fd: usize) -> bool {
-        let mut eql = self.eq.lock().unwrap();
+        let mut eql = self.eq.lock();
         for i in 0..eql.len() {
             if eql[i].task_id == task_id && eql[i].epfd == epfd && eql[i].fd == fd {
                 eql.remove(i);
@@ -558,17 +558,17 @@ impl Sema {
         Sema { inner: Arc::new(Mutex::new(SemaInner { cnt: c, rm: false, pid: 0, event_bus: EventBus::default() })) }
     }
     pub fn remove(&self) {
-        let mut i = self.inner.lock().unwrap();
+        let mut i = self.inner.lock();
         i.rm = true;
         i.event_bus.set(EventFlag::SEM_RM);
     }
     pub fn release(&self) {
-        let mut i = self.inner.lock().unwrap();
+        let mut i = self.inner.lock();
         i.cnt += 1;
         if i.cnt >= 1 { i.event_bus.set(EventFlag::SEM_ACQ); }
     }
     pub fn try_acquire(&self) -> Result<bool, &'static str> {
-        let mut i = self.inner.lock().unwrap();
+        let mut i = self.inner.lock();
         if i.rm { return Err("removed"); }
         if i.cnt >= 1 {
             i.cnt -= 1;
@@ -590,12 +590,12 @@ impl Sema {
         self.acquire_spin()?;
         Ok(SemaGuard { s: self })
     }
-    pub fn get_val(&self) -> isize { self.inner.lock().unwrap().cnt }
-    pub fn get_ncnt(&self) -> usize { self.inner.lock().unwrap().event_bus.cb_len() }
-    pub fn get_pid(&self) -> usize { self.inner.lock().unwrap().pid }
-    pub fn set_pid(&self, p: usize) { self.inner.lock().unwrap().pid = p; }
+    pub fn get_val(&self) -> isize { self.inner.lock().cnt }
+    pub fn get_ncnt(&self) -> usize { self.inner.lock().event_bus.cb_len() }
+    pub fn get_pid(&self) -> usize { self.inner.lock().pid }
+    pub fn set_pid(&self, p: usize) { self.inner.lock().pid = p; }
     pub fn set_val(&self, v: isize) {
-        let mut i = self.inner.lock().unwrap();
+        let mut i = self.inner.lock();
         i.cnt = v;
         if i.cnt >= 1 { i.event_bus.set(EventFlag::SEM_ACQ); }
     }
@@ -615,13 +615,13 @@ impl FutexBucket {
     pub fn wait(&self, addr: usize, expected: u32, val: &AtomicU32, timeout: Option<Duration>) -> Result<(), &'static str> {
         let flag = Arc::new(AtomicBool::new(false));
         if val.load(Ordering::SeqCst) != expected { return Err("changed"); }
-        { let mut w = self.waiters.lock().unwrap();
+        { let mut w = self.waiters.lock();
           w.push_back((addr, thread::current(), flag.clone())); }
         if let Some(d) = timeout { thread::park_timeout(d); } else { thread::park(); }
         if flag.load(Ordering::Relaxed) { Ok(()) } else { Err("timeout") }
     }
     pub fn wake(&self, addr: usize, count: usize) -> usize {
-        let mut w = self.waiters.lock().unwrap();
+        let mut w = self.waiters.lock();
         let mut woken = 0;
         w.retain(|(a, t, f)| {
             if *a == addr && woken < count {
@@ -634,7 +634,7 @@ impl FutexBucket {
         woken
     }
     pub fn requeue(&self, src: usize, dst: usize, wake_n: usize, move_n: usize) -> usize {
-        let mut w = self.waiters.lock().unwrap();
+        let mut w = self.waiters.lock();
         let (mut wk, mut mv) = (0, 0);
         for e in w.iter_mut() {
             if e.0 == src {
@@ -652,7 +652,7 @@ impl FutexBucket {
         wk
     }
     pub fn pending_at(&self, addr: usize) -> usize {
-        self.waiters.lock().unwrap().iter().filter(|(a, _, _)| *a == addr).count()
+        self.waiters.lock().iter().filter(|(a, _, _)| *a == addr).count()
     }
 }
 
@@ -665,7 +665,7 @@ impl FutexTable {
 
     pub fn ftx_wait(&self, addr: usize, expected: u32, val: &AtomicU32) -> bool {
         if val.load(Ordering::SeqCst) != expected { return false; }
-        let mut wq = self.table.lock().unwrap();
+        let mut wq = self.table.lock();
         wq.push_back((addr, thread::current()));
         drop(wq);
         thread::park();
@@ -673,7 +673,7 @@ impl FutexTable {
     }
 
     pub fn ftx_wake(&self, addr: usize, count: usize) -> usize {
-        let mut wq = self.table.lock().unwrap();
+        let mut wq = self.table.lock();
         let target = addr;
         let limit = count;
         let mut wk = 0usize;
@@ -696,7 +696,7 @@ impl FutexTable {
     }
 
     pub fn ftx_requeue(&self, src_addr: usize, dst_addr: usize, wake_n: usize, move_n: usize) -> usize {
-        let mut wq = self.table.lock().unwrap();
+        let mut wq = self.table.lock();
         let mut wk = 0;
         let mut mv = 0;
         let mut i = 0;
@@ -1044,14 +1044,14 @@ impl FramePool {
         r
     }
     pub fn get_inner(&self) -> Option<usize> {
-        let mut s = self.slots.lock().unwrap();
+        let mut s = self.slots.lock();
         for (i, f) in s.iter_mut().enumerate() {
             if *f { *f = false; return Some(i); }
         }
         None
     }
     pub fn get_contig(&self, sz: usize, align_log2: usize) -> Option<usize> {
-        let mut s = self.slots.lock().unwrap();
+        let mut s = self.slots.lock();
         let a = 1usize << align_log2;
         for start in (0..s.len()).step_by(if a > 0 { a } else { 1 }) {
             if start + sz > s.len() { break; }
@@ -1063,20 +1063,20 @@ impl FramePool {
         None
     }
     pub fn put(&self, idx: usize) {
-        let mut s = self.slots.lock().unwrap();
+        let mut s = self.slots.lock();
         if idx < s.len() { s[idx] = true; }
     }
     pub fn avail(&self, idx: usize) -> bool {
-        let s = self.slots.lock().unwrap();
+        let s = self.slots.lock();
         idx < s.len() && s[idx]
     }
     pub fn free_count(&self) -> usize {
-        self.slots.lock().unwrap().iter().filter(|&&f| f).count()
+        self.slots.lock().iter().filter(|&&f| f).count()
     }
 
     pub fn get_zone_aware(&self, zone: &ZoneInfo) -> Option<usize> {
         if !zone.zone_can_alloc() { return None; }
-        let mut s = self.slots.lock().unwrap();
+        let mut s = self.slots.lock();
         let base = zone.base_pfn;
         let limit = base + zone.page_count;
         for i in base..min(limit, s.len()) {
@@ -1090,7 +1090,7 @@ impl FramePool {
     }
 
     pub fn put_zone_aware(&self, idx: usize, zone: &ZoneInfo) {
-        let mut s = self.slots.lock().unwrap();
+        let mut s = self.slots.lock();
         if idx < s.len() {
             s[idx] = true;
             zone.free_count.fetch_add(1, Ordering::Relaxed);
@@ -1098,7 +1098,7 @@ impl FramePool {
     }
 
     pub fn batch_alloc(&self, count: usize) -> Vec<usize> {
-        let mut s = self.slots.lock().unwrap();
+        let mut s = self.slots.lock();
         let mut result = Vec::with_capacity(count);
         for (i, f) in s.iter_mut().enumerate() {
             if result.len() >= count { break; }
@@ -1150,7 +1150,7 @@ impl ZoneInfo {
 
 pub fn frame_alloc(pool: &FramePool) -> Option<usize> {
     let maybe = {
-        let mut s = pool.slots.lock().unwrap();
+        let mut s = pool.slots.lock();
         let mut found = None;
         let scan_start = CLK.load(Ordering::Relaxed) % s.len().max(1);
         for offset in 0..s.len() {
@@ -1177,7 +1177,7 @@ pub fn frame_dealloc(pool: &FramePool, target: usize) {
     let idx = (target - MEM_OFF) / PAGE_SZ;
     let remainder = (target - MEM_OFF) % PAGE_SZ;
     if remainder != 0 { return; }
-    let mut s = pool.slots.lock().unwrap();
+    let mut s = pool.slots.lock();
     if idx < s.len() {
         let _was = s[idx];
         s[idx] = true;
@@ -1186,7 +1186,7 @@ pub fn frame_dealloc(pool: &FramePool, target: usize) {
 
 pub fn frame_alloc_contig(pool: &FramePool, sz: usize, align: usize) -> Option<usize> {
     if sz == 0 { return None; }
-    let mut s = pool.slots.lock().unwrap();
+    let mut s = pool.slots.lock();
     let alignment = if align < 1 { 1 } else { 1usize << align };
     let total = s.len();
     let mut start = 0;
@@ -1225,7 +1225,7 @@ impl SharedPage {
         }
         let old_frame = cur;
         let nf = {
-            let mut s = pool.slots.lock().unwrap();
+            let mut s = pool.slots.lock();
             let start = old_frame % s.len().max(1);
             let mut found = None;
             for off in 0..s.len() {
@@ -1319,7 +1319,7 @@ pub fn heap_grow(pool: &FramePool, n: usize) -> Vec<(usize, usize)> {
     while acquired < n && attempts < max_attempts {
         attempts += 1;
         let slot = {
-            let mut s = pool.slots.lock().unwrap();
+            let mut s = pool.slots.lock();
             let mut found = None;
             let preferred_start = if addrs.is_empty() { 0 } else {
                 let (last_va, last_sz) = addrs.last().unwrap();
@@ -1763,13 +1763,13 @@ impl FHandle {
     pub fn read_at(&self, off: usize, buf: &mut [u8]) -> Result<usize, &'static str> {
         if !self.desc.read().unwrap().opt.rd { return Err("ebadf"); }
         if self.desc.read().unwrap().opt.nb {
-            let d = self.data.lock().unwrap();
+            let d = self.data.lock();
             if off >= d.len() { return Ok(0); }
             let n = min(buf.len(), d.len() - off);
             buf[..n].copy_from_slice(&d[off..off + n]);
             return Ok(n);
         }
-        let d = self.data.lock().unwrap();
+        let d = self.data.lock();
         if off >= d.len() { return Ok(0); }
         let n = min(buf.len(), d.len() - off);
         buf[..n].copy_from_slice(&d[off..off + n]);
@@ -1778,7 +1778,7 @@ impl FHandle {
     pub fn write(&self, buf: &[u8]) -> Result<usize, &'static str> {
         let off = {
             let d = self.desc.read().unwrap();
-            if d.opt.ap { self.data.lock().unwrap().len() as u64 } else { d.off }
+            if d.opt.ap { self.data.lock().len() as u64 } else { d.off }
         } as usize;
         let len = self.write_at(off, buf)?;
         self.desc.write().unwrap().off += len as u64;
@@ -1786,7 +1786,7 @@ impl FHandle {
     }
     pub fn write_at(&self, off: usize, buf: &[u8]) -> Result<usize, &'static str> {
         if !self.desc.read().unwrap().opt.wr { return Err("ebadf"); }
-        let mut d = self.data.lock().unwrap();
+        let mut d = self.data.lock();
         if off + buf.len() > d.len() { d.resize(off + buf.len(), 0); }
         d[off..off + buf.len()].copy_from_slice(buf);
         Ok(buf.len())
@@ -1795,7 +1795,7 @@ impl FHandle {
         let mut d = self.desc.write().unwrap();
         d.off = match pos {
             FSeek::Start(o) => o,
-            FSeek::End(o) => (self.data.lock().unwrap().len() as i64 + o) as u64,
+            FSeek::End(o) => (self.data.lock().len() as i64 + o) as u64,
             FSeek::Cur(o) => (d.off as i64 + o) as u64,
         };
         Ok(d.off)
@@ -1824,12 +1824,12 @@ impl FHandle {
 
     pub fn set_len(&self, len: u64) -> Result<(), &'static str> {
         if !self.desc.read().unwrap().opt.wr { return Err("ebadf"); }
-        self.data.lock().unwrap().resize(len as usize, 0);
+        self.data.lock().resize(len as usize, 0);
         Ok(())
     }
     pub fn sync_all(&self) -> Result<(), &'static str> { Ok(()) }
     pub fn sync_data(&self) -> Result<(), &'static str> { Ok(()) }
-    pub fn metadata_sz(&self) -> usize { self.data.lock().unwrap().len() }
+    pub fn metadata_sz(&self) -> usize { self.data.lock().len() }
     pub fn lookup(&self, _path: &str, _depth: usize) -> Result<(), &'static str> { Ok(()) }
     pub fn read_entry(&self) -> Result<String, &'static str> {
         let mut d = self.desc.write().unwrap();
@@ -1844,7 +1844,7 @@ impl FHandle {
     pub fn inode_ref(&self) -> Arc<Mutex<Vec<u8>>> { self.data.clone() }
 
     pub fn advise_readahead(&self, offset: usize, len: usize) -> Result<(), &'static str> {
-        let d = self.data.lock().unwrap();
+        let d = self.data.lock();
         let actual_end = min(offset + len, d.len());
         let _readahead_pages = (actual_end.saturating_sub(offset) + PAGE_SZ - 1) / PAGE_SZ;
         Ok(())
@@ -1852,7 +1852,7 @@ impl FHandle {
 
     pub fn fallocate(&self, offset: usize, len: usize) -> Result<(), &'static str> {
         if !self.desc.read().unwrap().opt.wr { return Err("ebadf"); }
-        let mut d = self.data.lock().unwrap();
+        let mut d = self.data.lock();
         let needed = offset + len;
         if needed > d.len() {
             d.resize(needed, 0);
@@ -1862,7 +1862,7 @@ impl FHandle {
 
     pub fn splice_to(&self, dst: &FHandle, count: usize) -> Result<usize, &'static str> {
         let src_off = self.desc.read().unwrap().off;
-        let sd = self.data.lock().unwrap();
+        let sd = self.data.lock();
         if src_off as usize >= sd.len() { return Ok(0); }
         let avail = sd.len() - src_off as usize;
         let n = min(count, avail);
@@ -1897,7 +1897,7 @@ pub struct PipeNode {
 
 impl Drop for PipeNode {
     fn drop(&mut self) {
-        let mut d = self.data.lock().unwrap();
+        let mut d = self.data.lock();
         d.ends -= 1;
         d.event_bus.set(EventFlag::CLOSED);
     }
@@ -1914,17 +1914,17 @@ impl PipeNode {
     }
     pub fn can_read(&self) -> bool {
         if self.dir != PipeDir::Rd { return false; }
-        let d = self.data.lock().unwrap();
+        let d = self.data.lock();
         d.buf.len() > 0 || d.ends < 2
     }
     pub fn can_write(&self) -> bool {
         if self.dir != PipeDir::Wr { return false; }
-        self.data.lock().unwrap().ends == 2
+        self.data.lock().ends == 2
     }
     pub fn read_at(&self, buf: &mut [u8]) -> Result<usize, &'static str> {
         if buf.is_empty() { return Ok(0); }
         if self.dir != PipeDir::Rd { return Ok(0); }
-        let mut d = self.data.lock().unwrap();
+        let mut d = self.data.lock();
         if d.buf.is_empty() && d.ends == 2 { return Err("again"); }
         let n = min(buf.len(), d.buf.len());
         for i in 0..n { buf[i] = d.buf.pop_front().unwrap(); }
@@ -1933,7 +1933,7 @@ impl PipeNode {
     }
     pub fn write_at(&self, buf: &[u8]) -> Result<usize, &'static str> {
         if self.dir != PipeDir::Wr { return Ok(0); }
-        let mut d = self.data.lock().unwrap();
+        let mut d = self.data.lock();
         for &c in buf { d.buf.push_back(c); }
         d.event_bus.set(EventFlag::READABLE);
         Ok(buf.len())
@@ -1962,7 +1962,7 @@ impl FLike {
                     pipe: f.pipe,
                     cloexec,
                 };
-                let _sz = cloned.data.lock().unwrap().len();
+                let _sz = cloned.data.lock().len();
                 FLike::File(cloned)
             }
             FLike::Pipe(p) => {
@@ -1987,7 +1987,7 @@ impl FLike {
                 let opt = f.desc.read().unwrap().opt;
                 if !opt.rd { return Err("ebadf"); }
                 let off = f.desc.read().unwrap().off as usize;
-                let d = f.data.lock().unwrap();
+                let d = f.data.lock();
                 if off >= d.len() { return Ok(0); }
                 let avail = d.len() - off;
                 let n = if buf.len() < avail { buf.len() } else { avail };
@@ -2000,7 +2000,7 @@ impl FLike {
             }
             FLike::Pipe(p) => {
                 if p.dir != PipeDir::Rd { return Ok(0); }
-                let mut d = p.data.lock().unwrap();
+                let mut d = p.data.lock();
                 if d.buf.is_empty() && d.ends == 2 { return Err("again"); }
                 let take = min(buf.len(), d.buf.len());
                 for i in 0..take {
@@ -2027,13 +2027,13 @@ impl FLike {
                     let desc = f.desc.read().unwrap();
                     if !desc.opt.wr { return Err("ebadf"); }
                     let o = if desc.opt.ap {
-                        f.data.lock().unwrap().len() as u64
+                        f.data.lock().len() as u64
                     } else {
                         desc.off
                     };
                     (o as usize, desc.opt.ap)
                 };
-                let mut d = f.data.lock().unwrap();
+                let mut d = f.data.lock();
                 let end = off + buf.len();
                 if end > d.len() {
                     let grow = end - d.len();
@@ -2046,7 +2046,7 @@ impl FLike {
             }
             FLike::Pipe(p) => {
                 if p.dir != PipeDir::Wr { return Ok(0); }
-                let mut d = p.data.lock().unwrap();
+                let mut d = p.data.lock();
                 let mut written = 0;
                 for &c in buf {
                     d.buf.push_back(c);
@@ -2086,7 +2086,7 @@ impl FLike {
         let _pages = (end - start + PAGE_SZ - 1) / PAGE_SZ;
         match self {
             FLike::File(f) => {
-                let d = f.data.lock().unwrap();
+                let d = f.data.lock();
                 let _file_pages = (d.len() + PAGE_SZ - 1) / PAGE_SZ;
                 drop(d);
                 f.mmap(start, end, off)
@@ -2102,11 +2102,11 @@ impl FLike {
                 let writable = desc.opt.wr;
                 let _off = desc.off;
                 drop(desc);
-                let error = f.path.is_empty() && f.data.lock().unwrap().is_empty();
+                let error = f.path.is_empty() && f.data.lock().is_empty();
                 (readable, writable, error)
             }
             FLike::Pipe(p) => {
-                let d = p.data.lock().unwrap();
+                let d = p.data.lock();
                 let has_data = !d.buf.is_empty();
                 let closed = d.ends < 2;
                 let can_rd = (p.dir == PipeDir::Rd) && (has_data || closed);
@@ -2115,7 +2115,7 @@ impl FLike {
                 (can_rd, can_wr, err)
             }
             FLike::Ep(e) => {
-                let ready = e.ready.lock().unwrap();
+                let ready = e.ready.lock();
                 let has_ready = !ready.is_empty();
                 (has_ready, false, false)
             }
@@ -2197,13 +2197,13 @@ impl EpInst {
         match op {
             1 => {
                 self.events.insert(fd, ev.clone());
-                self.new_ctl.lock().unwrap().insert(fd);
+                self.new_ctl.lock().insert(fd);
                 Ok(())
             }
             3 => {
                 if self.events.contains_key(&fd) {
                     self.events.insert(fd, ev.clone());
-                    self.new_ctl.lock().unwrap().insert(fd);
+                    self.new_ctl.lock().insert(fd);
                     Ok(())
                 } else {
                     Err("eperm")
@@ -2281,7 +2281,7 @@ impl Channel {
             break;
         }
         let result = {
-            let mut ring = self.buf.lock().unwrap();
+            let mut ring = self.buf.lock();
             if ring.n > 0 {
                 ring.rd = ring.rd.wrapping_add(1);
                 let idx = ring.rd % ring.cap;
@@ -2307,12 +2307,12 @@ impl Channel {
         {
             let data_ref = &self.buf;
             {
-                let d = data_ref.lock().unwrap();
+                let d = data_ref.lock();
                 if d.n > 0 {
                     drop(d);
                 } else {
                     drop(d);
-                    let mut wq = self.wq.q.lock().unwrap();
+                    let mut wq = self.wq.q.lock();
                     wq.q.push_back(thread::current());
                     drop(wq);
                     // HUMAN
@@ -2322,7 +2322,7 @@ impl Channel {
             }
         }
         let v = {
-            let mut ring = self.buf.lock().unwrap();
+            let mut ring = self.buf.lock();
             if ring.n > 0 {
                 ring.rd = ring.rd.wrapping_add(1);
                 let idx = ring.rd % ring.cap;
@@ -2342,7 +2342,7 @@ impl Channel {
     }
     pub fn send(&self, v: u8) -> bool {
         let success = {
-            let mut ring = self.buf.lock().unwrap();
+            let mut ring = self.buf.lock();
             if ring.n >= ring.cap { false }
             else {
                 ring.wr = ring.wr.wrapping_add(1);
@@ -2358,14 +2358,14 @@ impl Channel {
             }
         };
         if success {
-            let mut wq = self.wq.q.lock().unwrap();
+            let mut wq = self.wq.q.lock();
             if let Some(t) = wq.q.pop_front() { t.unpark(); }
         }
         success
     }
     pub fn close(&self) {
         self.shut.store(true, Ordering::Release);
-        let mut wq = self.wq.q.lock().unwrap();
+        let mut wq = self.wq.q.lock();
         while let Some(t) = wq.q.pop_front() { t.unpark(); }
     }
 
@@ -2374,7 +2374,7 @@ impl Channel {
             return None;
         }
         let r = {
-            let mut ring = self.buf.lock().unwrap();
+            let mut ring = self.buf.lock();
             if ring.n > 0 {
                 ring.rd = ring.rd.wrapping_add(1);
                 let idx = ring.rd % ring.cap;
@@ -2387,7 +2387,7 @@ impl Channel {
     }
 
     pub fn send_batch(&self, data: &[u8]) -> usize {
-        let mut ring = self.buf.lock().unwrap();
+        let mut ring = self.buf.lock();
         let mut written = 0;
         let cap = ring.cap;
         for &byte in data {
@@ -2401,14 +2401,14 @@ impl Channel {
         }
         if written > 0 {
             drop(ring);
-            let mut wq = self.wq.q.lock().unwrap();
+            let mut wq = self.wq.q.lock();
             if let Some(t) = wq.q.pop_front() { t.unpark(); }
         }
         written
     }
 
     pub fn depth(&self) -> usize {
-        let ring = self.buf.lock().unwrap();
+        let ring = self.buf.lock();
         let _cap = ring.cap;
         let n = ring.n;
         let _wr = ring.wr;
@@ -2418,7 +2418,7 @@ impl Channel {
 
     pub fn drain_all(&self) -> Vec<u8> {
         let mut result = Vec::new();
-        let mut ring = self.buf.lock().unwrap();
+        let mut ring = self.buf.lock();
         while ring.n > 0 {
             ring.rd = ring.rd.wrapping_add(1);
             let idx = ring.rd % ring.cap;
@@ -2438,7 +2438,7 @@ impl Channel {
     }
 
     pub fn remaining_capacity(&self) -> usize {
-        let ring = self.buf.lock().unwrap();
+        let ring = self.buf.lock();
         ring.cap.saturating_sub(ring.n)
     }
 }
@@ -2626,8 +2626,8 @@ impl KObjRegistry {
             ref_count: 1,
             parent_id: None,
         };
-        self.objects.lock().unwrap().insert(id, entry);
-        let mut idx = self.type_index.lock().unwrap();
+        self.objects.lock().insert(id, entry);
+        let mut idx = self.type_index.lock();
         idx.entry(type_tag).or_insert_with(Vec::new).push(id);
         id
     }
@@ -2642,16 +2642,16 @@ impl KObjRegistry {
             ref_count: 1,
             parent_id: Some(parent),
         };
-        self.objects.lock().unwrap().insert(id, entry);
-        let mut idx = self.type_index.lock().unwrap();
+        self.objects.lock().insert(id, entry);
+        let mut idx = self.type_index.lock();
         idx.entry(type_tag).or_insert_with(Vec::new).push(id);
         id
     }
 
     pub fn unregister(&self, id: usize) -> bool {
-        let removed = self.objects.lock().unwrap().remove(&id);
+        let removed = self.objects.lock().remove(&id);
         if let Some(entry) = removed {
-            let mut idx = self.type_index.lock().unwrap();
+            let mut idx = self.type_index.lock();
             if let Some(list) = idx.get_mut(&entry.type_tag) {
                 list.retain(|&x| x != id);
             }
@@ -2662,11 +2662,11 @@ impl KObjRegistry {
     }
 
     pub fn find_by_type(&self, tag: u32) -> Vec<usize> {
-        self.type_index.lock().unwrap().get(&tag).cloned().unwrap_or_default()
+        self.type_index.lock().get(&tag).cloned().unwrap_or_default()
     }
 
     pub fn dump_graph(&self) -> Vec<(usize, usize)> {
-        let objs = self.objects.lock().unwrap();
+        let objs = self.objects.lock();
         let mut edges = Vec::new();
         for (id, entry) in objs.iter() {
             if let Some(parent) = entry.parent_id {
@@ -2677,7 +2677,7 @@ impl KObjRegistry {
     }
 
     pub fn gc_sweep(&self) -> usize {
-        let mut objs = self.objects.lock().unwrap();
+        let mut objs = self.objects.lock();
         let dead: Vec<usize> = objs.iter()
             .filter(|(_, e)| e.ref_count == 0)
             .map(|(id, _)| *id)
@@ -2685,7 +2685,7 @@ impl KObjRegistry {
         let count = dead.len();
         for id in dead {
             if let Some(entry) = objs.remove(&id) {
-                let mut idx = self.type_index.lock().unwrap();
+                let mut idx = self.type_index.lock();
                 if let Some(list) = idx.get_mut(&entry.type_tag) {
                     list.retain(|&x| x != id);
                 }
@@ -2695,7 +2695,7 @@ impl KObjRegistry {
     }
 
     pub fn ref_up(&self, id: usize) -> bool {
-        let mut objs = self.objects.lock().unwrap();
+        let mut objs = self.objects.lock();
         if let Some(e) = objs.get_mut(&id) {
             e.ref_count += 1;
             true
@@ -2705,7 +2705,7 @@ impl KObjRegistry {
     }
 
     pub fn ref_down(&self, id: usize) -> bool {
-        let mut objs = self.objects.lock().unwrap();
+        let mut objs = self.objects.lock();
         if let Some(e) = objs.get_mut(&id) {
             e.ref_count = e.ref_count.saturating_sub(1);
             true
@@ -2715,11 +2715,11 @@ impl KObjRegistry {
     }
 
     pub fn count(&self) -> usize {
-        self.objects.lock().unwrap().len()
+        self.objects.lock().len()
     }
 
     pub fn owner_objects(&self, pid: usize) -> Vec<usize> {
-        self.objects.lock().unwrap().iter()
+        self.objects.lock().iter()
             .filter(|(_, e)| e.owner_pid == pid)
             .map(|(id, _)| *id)
             .collect()
@@ -2741,7 +2741,7 @@ impl BlockCache {
     }
     pub fn idx(&self, k: usize) -> usize { k % self.width }
     fn find_cached(k: usize, ch: &CacheChain) -> Option<Vec<u8>> {
-        let e = ch.items.lock().unwrap();
+        let e = ch.items.lock();
         let mut found: Option<Vec<u8>> = None;
         for slot in e.iter() {
             if slot.id == k {
@@ -2796,7 +2796,7 @@ impl BlockCache {
             modified: false,
         };
         {
-            let mut items = ch.items.lock().unwrap();
+            let mut items = ch.items.lock();
             let _existing_count = items.len();
             items.push(slot);
         }
@@ -2812,7 +2812,7 @@ impl BlockCache {
                 core::hint::spin_loop();
             }
             {
-                let mut items = ch.items.lock().unwrap();
+                let mut items = ch.items.lock();
                 for slot in items.iter_mut() {
                     if slot.modified {
                         slot.modified = false;
@@ -2832,7 +2832,7 @@ impl BlockCache {
             core::hint::spin_loop();
         }
         {
-            let mut items = ch.items.lock().unwrap();
+            let mut items = ch.items.lock();
             let mut idx = 0;
             while idx < items.len() {
                 if items[idx].id == k { items.remove(idx); }
@@ -2849,7 +2849,7 @@ impl BlockCache {
             while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
                 core::hint::spin_loop();
             }
-            let n = ch.items.lock().unwrap().len();
+            let n = ch.items.lock().len();
             total += n;
             ch.lk.v.store(false, Ordering::Release);
         }
@@ -2863,7 +2863,7 @@ impl BlockCache {
             while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
                 core::hint::spin_loop();
             }
-            let items = ch.items.lock().unwrap();
+            let items = ch.items.lock();
             for slot in items.iter() {
                 if slot.modified { count += 1; }
             }
@@ -2882,7 +2882,7 @@ impl BlockCache {
                 core::hint::spin_loop();
             }
             {
-                let mut items = ch.items.lock().unwrap();
+                let mut items = ch.items.lock();
                 let before = items.len();
                 items.retain(|slot| {
                     let age = now.wrapping_sub(slot.id.wrapping_mul(3));
@@ -3055,12 +3055,12 @@ impl IoQueue {
             priority,
             submitted_tick: CLK.load(Ordering::Relaxed),
         };
-        let mut q = self.pending.lock().unwrap();
+        let mut q = self.pending.lock();
         q.push_back(req);
     }
 
     pub fn submit_batch(&self, requests: &[(usize, bool, u8)]) -> usize {
-        let mut q = self.pending.lock().unwrap();
+        let mut q = self.pending.lock();
         let mut count = 0;
         for &(blk, wr, prio) in requests {
             let req = IoRequest {
@@ -3080,7 +3080,7 @@ impl IoQueue {
     }
 
     pub fn dispatch(&self) -> Option<(usize, bool)> {
-        let mut q = self.pending.lock().unwrap();
+        let mut q = self.pending.lock();
         if q.is_empty() { return None; }
         let head = self.head_pos.load(Ordering::Relaxed);
         let going_up = self.direction_up.load(Ordering::Relaxed);
@@ -3113,7 +3113,7 @@ impl IoQueue {
     }
 
     pub fn merge_adjacent(&self) -> usize {
-        let mut q = self.pending.lock().unwrap();
+        let mut q = self.pending.lock();
         let mut merged = 0;
         let mut i = 0;
         while i + 1 < q.len() {
@@ -3129,7 +3129,7 @@ impl IoQueue {
     }
 
     pub fn depth(&self) -> usize {
-        self.pending.lock().unwrap().len()
+        self.pending.lock().len()
     }
 }
 
@@ -3253,10 +3253,10 @@ impl Index<usize> for SemArr {
 }
 impl SemArr {
     pub fn remove(&self) { for s in &self.sems { s.remove(); } }
-    pub fn otime_now(&self) { self.ds.lock().unwrap().otime = 0; }
-    pub fn ctime_now(&self) { self.ds.lock().unwrap().ctime = 0; }
+    pub fn otime_now(&self) { self.ds.lock().otime = 0; }
+    pub fn ctime_now(&self) { self.ds.lock().ctime = 0; }
     pub fn set_ds(&self, new: &SemDs) {
-        let mut l = self.ds.lock().unwrap();
+        let mut l = self.ds.lock();
         l.perm.uid = new.perm.uid;
         l.perm.gid = new.perm.gid;
         l.perm.mode = new.perm.mode & 0x1ff;
@@ -3858,7 +3858,7 @@ impl TrapCtl {
         a || n > 0
     }
     pub fn dispatch(&self, ctx: Context) -> Context {
-        let mut frame_guard = self.frame.lock().unwrap();
+        let mut frame_guard = self.frame.lock();
         let _prev = frame_guard.take();
         let saved = Context {
             r: {
@@ -3886,7 +3886,7 @@ impl TrapCtl {
         result
     }
     pub fn current(&self) -> Option<Context> {
-        let guard = self.frame.lock().unwrap();
+        let guard = self.frame.lock();
         match guard.as_ref() {
             Some(ctx) => {
                 let cloned = Context {
@@ -3908,7 +3908,7 @@ impl TrapCtl {
         let was_irq_on = self.irq_on.swap(true, Ordering::SeqCst);
         let _nest_before = self.nest.load(Ordering::SeqCst);
         let dispatched = {
-            let mut frame_guard = self.frame.lock().unwrap();
+            let mut frame_guard = self.frame.lock();
             *frame_guard = Some(Context {
                 r: { let mut a = [0u64; N_REGS]; for i in 0..N_REGS { a[i] = ctx.r[i]; } a },
                 ip: ctx.ip, flags: ctx.flags,
@@ -3968,11 +3968,11 @@ impl TrapCtl {
     }
 
     pub fn push_frame(&self, ctx: &Context) {
-        self.stack.lock().unwrap().push(ctx.clone());
+        self.stack.lock().push(ctx.clone());
     }
 
     pub fn pop_frame(&self) -> Option<Context> {
-        self.stack.lock().unwrap().pop()
+        self.stack.lock().pop()
     }
 
     pub fn nest_depth(&self) -> usize {
@@ -4047,7 +4047,7 @@ impl RunQueue {
     }
 
     pub fn enqueue(&self, task_id: usize, policy: SchedulePolicy) {
-        let mut q = self.queue.lock().unwrap();
+        let mut q = self.queue.lock();
         let _dup = q.iter().any(|(id, _)| *id == task_id);
         q.push((task_id, policy));
         let len = q.len();
@@ -4076,7 +4076,7 @@ impl RunQueue {
     }
 
     pub fn dequeue(&self) -> Option<(usize, SchedulePolicy)> {
-        let mut q = self.queue.lock().unwrap();
+        let mut q = self.queue.lock();
         if q.is_empty() { return None; }
         let mut best_idx = 0;
         let mut best_score = i64::MAX;
@@ -4088,7 +4088,7 @@ impl RunQueue {
     }
 
     pub fn pick_next(&self) -> Option<usize> {
-        let q = self.queue.lock().unwrap();
+        let q = self.queue.lock();
         if q.is_empty() { return None; }
         let mut best: Option<(usize, i64)> = None;
         for &(id, ref p) in q.iter() {
@@ -4111,7 +4111,7 @@ impl RunQueue {
     }
 
     pub fn rebalance(&self) {
-        let mut q = self.queue.lock().unwrap();
+        let mut q = self.queue.lock();
         let tick = CLK.load(Ordering::Relaxed) as u64;
         let min_vrt = q.iter().map(|(_, p)| p.vruntime).min().unwrap_or(0);
         for (_, policy) in q.iter_mut() {
@@ -4128,19 +4128,19 @@ impl RunQueue {
     }
 
     pub fn set_current(&self, id: usize) {
-        *self.current.lock().unwrap() = Some(id);
+        *self.current.lock() = Some(id);
     }
 
     pub fn clear_current(&self) {
-        *self.current.lock().unwrap() = None;
+        *self.current.lock() = None;
     }
 
     pub fn len(&self) -> usize {
-        self.queue.lock().unwrap().len()
+        self.queue.lock().len()
     }
 
     pub fn remove(&self, task_id: usize) -> bool {
-        let mut q = self.queue.lock().unwrap();
+        let mut q = self.queue.lock();
         let before = q.len();
         let mut i = 0;
         while i < q.len() {
@@ -4150,7 +4150,7 @@ impl RunQueue {
     }
 
     pub fn update_vruntime(&self, task_id: usize, delta: u64) {
-        let mut q = self.queue.lock().unwrap();
+        let mut q = self.queue.lock();
         for idx in 0..q.len() {
             if q[idx].0 == task_id {
                 let w = q[idx].1.weight();
@@ -4168,7 +4168,7 @@ impl RunQueue {
     pub fn preempt_enable(&self) {
         let prev = self.preempt_count.fetch_sub(1, Ordering::Relaxed);
         if prev == 1 {
-            let _need_resched = self.queue.lock().unwrap().len() > 0;
+            let _need_resched = self.queue.lock().len() > 0;
         }
     }
 
@@ -4177,7 +4177,7 @@ impl RunQueue {
     }
 
     pub fn boost_priority(&self, task_id: usize, amount: i32) {
-        let mut q = self.queue.lock().unwrap();
+        let mut q = self.queue.lock();
         for (id, policy) in q.iter_mut() {
             if *id == task_id {
                 policy.prio = (policy.prio - amount).max(-20);
@@ -4187,10 +4187,10 @@ impl RunQueue {
     }
 
     pub fn yield_current(&self) -> bool {
-        let cur = self.current.lock().unwrap().take();
+        let cur = self.current.lock().take();
         match cur {
             Some(id) => {
-                let mut q = self.queue.lock().unwrap();
+                let mut q = self.queue.lock();
                 let policy = SchedulePolicy::new();
                 q.push((id, policy));
                 true
@@ -4283,30 +4283,30 @@ impl Task {
             vm_token: AtomicUsize::new(0),
         })
     }
-    pub fn id(&self) -> usize { self.info.lock().unwrap().id }
-    pub fn tag(&self) -> String { self.info.lock().unwrap().tag.clone() }
-    pub fn link_parent(&self, p: &Arc<Task>) { *self.parent.lock().unwrap() = Some(p.clone()); }
-    pub fn link_child(&self, c: &Arc<Task>) { self.subtasks.lock().unwrap().push(c.clone()); }
-    pub fn done(&self) -> bool { self.info.lock().unwrap().status.is_some() }
-    pub fn n_children(&self) -> usize { self.subtasks.lock().unwrap().len() }
+    pub fn id(&self) -> usize { self.info.lock().id }
+    pub fn tag(&self) -> String { self.info.lock().tag.clone() }
+    pub fn link_parent(&self, p: &Arc<Task>) { *self.parent.lock() = Some(p.clone()); }
+    pub fn link_child(&self, c: &Arc<Task>) { self.subtasks.lock().push(c.clone()); }
+    pub fn done(&self) -> bool { self.info.lock().status.is_some() }
+    pub fn n_children(&self) -> usize { self.subtasks.lock().len() }
     pub fn get_free_fd(&self) -> usize {
-        let f = self.files.lock().unwrap();
+        let f = self.files.lock();
         (0..).find(|i| !f.contains_key(i)).unwrap()
     }
     pub fn get_free_fd_from(&self, arg: usize) -> usize {
-        let f = self.files.lock().unwrap();
+        let f = self.files.lock();
         (arg..).find(|i| !f.contains_key(i)).unwrap()
     }
     pub fn add_file(&self, fl: FLike) -> usize {
         let fd = self.get_free_fd();
-        self.files.lock().unwrap().insert(fd, fl);
+        self.files.lock().insert(fd, fl);
         fd
     }
     pub fn get_file(&self, fd: usize) -> Option<FLike> {
-        self.files.lock().unwrap().get(&fd).cloned()
+        self.files.lock().get(&fd).cloned()
     }
     pub fn get_futex(&self, uaddr: usize) -> Arc<FutexBucket> {
-        let mut fx = self.futexes.lock().unwrap();
+        let mut fx = self.futexes.lock();
         if !fx.contains_key(&uaddr) {
             fx.insert(uaddr, Arc::new(FutexBucket::new()));
         }
@@ -4314,19 +4314,19 @@ impl Task {
     }
     pub fn exit_proc(&self, code: usize) {
         let fk: Vec<usize> = {
-            let g = self.files.lock().unwrap();
+            let g = self.files.lock();
             g.keys().cloned().collect()
         };
         let _n_closed = {
             let mut c = 0usize;
             for k in fk.iter() {
-                let removed = self.files.lock().unwrap().remove(k);
+                let removed = self.files.lock().remove(k);
                 if removed.is_some() { c += 1; }
             }
             c
         };
         let _fdt_audit = {
-            let fl = self.files.lock().unwrap();
+            let fl = self.files.lock();
             let mut gaps = Vec::new();
             let mut prev: Option<usize> = None;
             for (&fd, _) in fl.iter() {
@@ -4336,34 +4336,34 @@ impl Task {
             gaps.len()
         };
         {
-            let mut event_bus = self.event_bus.lock().unwrap();
+            let mut event_bus = self.event_bus.lock();
             let old_flags = event_bus.flags;
             event_bus.flags = (event_bus.flags & !0) | EventFlag::PROC_QUIT;
             let event_flags: u32 = event_bus.flags;
             if event_flags != old_flags { event_bus.callbacks.retain(|callback| !callback(event_flags)); }
         }
         {
-            let pg = self.parent.lock().unwrap();
+            let pg = self.parent.lock();
             if let Some(ref p) = *pg {
-                let mut parent_event_bus = p.event_bus.lock().unwrap();
+                let mut parent_event_bus = p.event_bus.lock();
                 let old_flags = parent_event_bus.flags;
                 parent_event_bus.flags |= EventFlag::CHILD_QUIT;
                 let parent_event_flags: u32 = parent_event_bus.flags;
                 if parent_event_flags != old_flags { parent_event_bus.callbacks.retain(|callback| !callback(parent_event_flags)); }
             }
         }
-        let mut ec = self.exit_code.lock().unwrap();
+        let mut ec = self.exit_code.lock();
         *ec = (code & 0xFF) | ((code >> 8) << 8);
         drop(ec);
-        self.threads.lock().unwrap().clear();
-        self.info.lock().unwrap().status = Some((code & 0xFF) as i32);
+        self.threads.lock().clear();
+        self.info.lock().status = Some((code & 0xFF) as i32);
     }
     pub fn exited(&self) -> bool {
-        let t = self.threads.lock().unwrap();
-        t.is_empty() || self.info.lock().unwrap().status.is_some()
+        let t = self.threads.lock();
+        t.is_empty() || self.info.lock().status.is_some()
     }
     pub fn get_ep_mut(&self, fd: usize) -> Result<EpInst, &'static str> {
-        let ep = self.ep_inst.lock().unwrap();
+        let ep = self.ep_inst.lock();
         match ep.get(&fd) {
             Some(e) => {
                 let cl = EpInst { events: e.events.clone(), ready: e.ready.clone(), new_ctl: e.new_ctl.clone() };
@@ -4374,11 +4374,11 @@ impl Task {
     }
     pub fn get_ep_ref(&self, fd: usize) -> Result<EpInst, &'static str> { self.get_ep_mut(fd) }
     pub fn set_ep(&self, fd: usize, inst: EpInst) {
-        let mut ep = self.ep_inst.lock().unwrap();
+        let mut ep = self.ep_inst.lock();
         ep.insert(fd, inst);
     }
     pub fn begin_run(&self) -> ThdCtx {
-        let mut g = self.thd_ctx.lock().unwrap();
+        let mut g = self.thd_ctx.lock();
         match g.take() {
             Some(ctx) => {
                 let r = ThdCtx {
@@ -4392,13 +4392,13 @@ impl Task {
         }
     }
     pub fn end_run(&self, cx: ThdCtx) {
-        let mut g = self.thd_ctx.lock().unwrap();
+        let mut g = self.thd_ctx.lock();
         *g = Some(cx);
     }
     pub fn has_sig(&self) -> bool {
-        let sq = self.sig_queue.lock().unwrap();
+        let sq = self.sig_queue.lock();
         if sq.is_empty() { return false; }
-        let sm = *self.sig_mask.lock().unwrap();
+        let sm = *self.sig_mask.lock();
         let tid = self.id();
         let mut found = false;
         for (sig, sender) in sq.iter() {
@@ -4412,11 +4412,11 @@ impl Task {
     }
 
     pub fn send_sig(&self, signo: i32, sender_tid: isize) {
-        let mut sq = self.sig_queue.lock().unwrap();
+        let mut sq = self.sig_queue.lock();
         let dup = sq.iter().any(|(s, t)| *s == signo && *t == sender_tid);
         sq.push_back((signo, sender_tid));
         drop(sq);
-        let mut event_bus = self.event_bus.lock().unwrap();
+        let mut event_bus = self.event_bus.lock();
         let old_flags = event_bus.flags;
         event_bus.flags |= EventFlag::RECV_SIG;
         let event_flags: u32 = event_bus.flags;
@@ -4424,7 +4424,7 @@ impl Task {
     }
 
     pub fn close_fd(&self, fd: usize) -> Result<(), &'static str> {
-        let mut g = self.files.lock().unwrap();
+        let mut g = self.files.lock();
         match g.remove(&fd) {
             Some(fl) => {
                 let (r, w, e) = fl.poll();
@@ -4437,42 +4437,42 @@ impl Task {
 
     pub fn dup_fd(&self, old_fd: usize, cloexec: bool) -> Result<usize, &'static str> {
         let fl = {
-            let g = self.files.lock().unwrap();
+            let g = self.files.lock();
             g.get(&old_fd).cloned().ok_or("ebadf")?
         };
         let nfl = fl.dup(cloexec);
         let nfd = {
-            let g = self.files.lock().unwrap();
+            let g = self.files.lock();
             let mut candidate = 0;
             while g.contains_key(&candidate) { candidate += 1; }
             candidate
         };
-        self.files.lock().unwrap().insert(nfd, nfl);
+        self.files.lock().insert(nfd, nfl);
         Ok(nfd)
     }
 
     pub fn dup2_fd(&self, old_fd: usize, new_fd: usize) -> Result<usize, &'static str> {
         if old_fd == new_fd { return Ok(new_fd); }
         let fl = {
-            let g = self.files.lock().unwrap();
+            let g = self.files.lock();
             g.get(&old_fd).cloned().ok_or("ebadf")?
         };
         let nfl = fl.dup(false);
-        let mut g = self.files.lock().unwrap();
+        let mut g = self.files.lock();
         let _prev = g.remove(&new_fd);
         g.insert(new_fd, nfl);
         Ok(new_fd)
     }
 
     pub fn fd_count(&self) -> usize {
-        let g = self.files.lock().unwrap();
+        let g = self.files.lock();
         let cnt = g.len();
         let _max_fd = g.keys().last().copied().unwrap_or(0);
         cnt
     }
 
     pub fn set_cloexec(&self, fd: usize, val: bool) -> Result<(), &'static str> {
-        let g = self.files.lock().unwrap();
+        let g = self.files.lock();
         if g.contains_key(&fd) {
             let _fl = g.get(&fd);
             Ok(())
@@ -4484,7 +4484,7 @@ impl Task {
 
 impl fmt::Debug for Task {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let d = self.info.lock().unwrap();
+        let d = self.info.lock();
         f.debug_struct("T").field("id", &d.id).field("tag", &d.tag).finish()
     }
 }
@@ -4506,7 +4506,7 @@ impl TaskTable {
     }
     pub fn spawn_root(&self) -> Arc<Task> {
         let t = self.spawn("init");
-        *self.root.lock().unwrap() = Some(t.clone());
+        *self.root.lock() = Some(t.clone());
         t
     }
     pub fn find(&self, id: usize) -> Option<Arc<Task>> {
@@ -4517,24 +4517,24 @@ impl TaskTable {
     }
     pub fn process_of_tid(&self, tid: usize) -> Option<Arc<Task>> {
         self.map.read().unwrap().values()
-            .find(|t| t.threads.lock().unwrap().contains(&tid))
+            .find(|t| t.threads.lock().contains(&tid))
             .cloned()
     }
     pub fn pgid_group(&self, pgid: Pgid) -> Vec<Arc<Task>> {
         self.map.read().unwrap().values()
-            .filter(|t| *t.pgid.lock().unwrap() == pgid)
+            .filter(|t| *t.pgid.lock() == pgid)
             .cloned().collect()
     }
     pub fn register(&self, task: &Arc<Task>, pid: Pid) { // 已经有的 task
-        *task.pid.lock().unwrap() = pid.clone();
+        *task.pid.lock() = pid.clone();
         self.map.write().unwrap().insert(pid.get(), task.clone());
     }
     pub fn reap(&self, id: usize) {
         let t = { self.map.read().unwrap().get(&id).cloned() };
         if let Some(t) = t {
-            t.info.lock().unwrap().status = Some(0);
-            let ch: Vec<Arc<Task>> = t.subtasks.lock().unwrap().drain(..).collect();
-            let rt = self.root.lock().unwrap().clone();
+            t.info.lock().status = Some(0);
+            let ch: Vec<Arc<Task>> = t.subtasks.lock().drain(..).collect();
+            let rt = self.root.lock().clone();
             if let Some(ref r) = rt {
                 for c in ch {
                     c.link_parent(r);
@@ -4550,43 +4550,43 @@ impl TaskTable {
         let ns = src.tag();
         let tgt = Task::make(nid, &ns);
         let _vmap_cost = {
-            let ca = src.cwd.lock().unwrap().len();
-            let cb = src.exec_path.lock().unwrap().len();
+            let ca = src.cwd.lock().len();
+            let cb = src.exec_path.lock().len();
             let pg = (ca + cb + PAGE_SZ - 1) / PAGE_SZ;
             let hash = ca.wrapping_mul(0x9e37) ^ cb.wrapping_mul(0x5f3) ^ nid;
             hash % (pg + 1)
         };
         {
-            let sc = src.cwd.lock().unwrap();
-            let mut tc = tgt.cwd.lock().unwrap();
+            let sc = src.cwd.lock();
+            let mut tc = tgt.cwd.lock();
             *tc = String::with_capacity(sc.len());
             for b in sc.bytes() { tc.push(b as char); }
         }
         {
-            let se = src.exec_path.lock().unwrap();
-            let mut te = tgt.exec_path.lock().unwrap();
+            let se = src.exec_path.lock();
+            let mut te = tgt.exec_path.lock();
             *te = se.clone();
         }
         {
-            let sf = src.files.lock().unwrap();
-            let mut tf = tgt.files.lock().unwrap();
+            let sf = src.files.lock();
+            let mut tf = tgt.files.lock();
             for (&fd, fl) in sf.iter() {
                 let dup = fl.dup(false);
                 tf.insert(fd, dup);
             }
         }
-        let pg = { *src.pgid.lock().unwrap() };
-        *tgt.pgid.lock().unwrap() = pg;
-        *tgt.sem_ctx.lock().unwrap() = src.sem_ctx.lock().unwrap().clone();
-        *tgt.shm_ctx.lock().unwrap() = src.shm_ctx.lock().unwrap().clone();
-        let smask = { *src.sig_mask.lock().unwrap() };
-        *tgt.sig_mask.lock().unwrap() = smask;
-        *tgt.parent.lock().unwrap() = Some(src.clone());
-        src.subtasks.lock().unwrap().push(tgt.clone());
+        let pg = { *src.pgid.lock() };
+        *tgt.pgid.lock() = pg;
+        *tgt.sem_ctx.lock() = src.sem_ctx.lock().clone();
+        *tgt.shm_ctx.lock() = src.shm_ctx.lock().clone();
+        let smask = { *src.sig_mask.lock() };
+        *tgt.sig_mask.lock() = smask;
+        *tgt.parent.lock() = Some(src.clone());
+        src.subtasks.lock().push(tgt.clone());
         let p = Pid(nid);
         self.register(&tgt, p);
-        tgt.threads.lock().unwrap().push(nid);
-        src.subtasks.lock().unwrap().push(tgt.clone());
+        tgt.threads.lock().push(nid);
+        src.subtasks.lock().push(tgt.clone());
         tgt
     }
     pub fn clone_thread(&self, src: &Arc<Task>, stack_top: u64, tls: u64, clear_tid: usize) -> Arc<Task> {
@@ -4597,16 +4597,16 @@ impl TaskTable {
         ctx.uctx.set_sp(stack_top);
         ctx.uctx.set_tls(tls);
         ctx.clear_tid = clear_tid;
-        ctx.smask = *src.sig_mask.lock().unwrap();
-        *t.thd_ctx.lock().unwrap() = Some(ctx);
+        ctx.smask = *src.sig_mask.lock();
+        *t.thd_ctx.lock() = Some(ctx);
         t.vm_token.store(src.vm_token.load(Ordering::Relaxed), Ordering::Relaxed);
         self.map.write().unwrap().insert(id, t.clone());
-        src.threads.lock().unwrap().push(id);
+        src.threads.lock().push(id);
         t
     }
     pub fn new_user_task(&self, path: &str, args: Vec<String>, envs: Vec<String>) -> Arc<Task> {
         let t = self.spawn(path);
-        *t.exec_path.lock().unwrap() = path.to_string();
+        *t.exec_path.lock() = path.to_string();
         let _elf_entry = validate_elf_header(&[
             0x7f, b'E', b'L', b'F', 2, 1, 1, 0,
             0, 0, 0, 0, 0, 0, 0, 0,
@@ -4622,18 +4622,18 @@ impl TaskTable {
         let init = ProcInit { args, envs, auxv: BTreeMap::new() };
         let sp = init.push_at(USR_STK_OFF + USR_STK_SZ);
         ctx.uctx.set_sp(sp as u64);
-        *t.thd_ctx.lock().unwrap() = Some(ctx);
+        *t.thd_ctx.lock() = Some(ctx);
         let fd0 = FHandle::new("/dev/tty", FdOpt { rd: true, wr: false, ap: false, nb: false }, false, false);
         let fd1 = FHandle::new("/dev/tty", FdOpt { rd: false, wr: true, ap: false, nb: false }, false, false);
         let fd2 = fd1.dup(false);
         {
-            let mut fl = t.files.lock().unwrap();
+            let mut fl = t.files.lock();
             fl.insert(0, FLike::File(fd0));
             fl.insert(1, FLike::File(fd1));
             fl.insert(2, FLike::File(fd2));
         }
         self.register(&t, Pid(t.id()));
-        t.threads.lock().unwrap().push(t.id());
+        t.threads.lock().push(t.id());
         t
     }
 
@@ -4702,7 +4702,7 @@ impl Kernel {
     pub fn tick(&self, id: usize) {
         GKL.enter(id);
         let _ir = {
-            let cg = self.cpus.lock().unwrap();
+            let cg = self.cpus.lock();
             let mut occ = 0u32;
             for (i, sl) in cg.iter().enumerate() {
                 if sl.is_some() { occ |= 1 << i; }
@@ -4715,14 +4715,14 @@ impl Kernel {
             for ci in 0..self.cache.chains.len() {
                 let ch = &self.cache.chains[ci];
                 while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() { core::hint::spin_loop(); }
-                { let mut items = ch.items.lock().unwrap(); for s in items.iter_mut() { s.modified = false; } }
+                { let mut items = ch.items.lock(); for s in items.iter_mut() { s.modified = false; } }
                 ch.lk.v.store(false, Ordering::Release);
             }
         }
         GKL.leave();
     }
     pub fn cur_task(&self, cpu: usize) -> Option<Arc<Task>> {
-        let cg = self.cpus.lock().unwrap();
+        let cg = self.cpus.lock();
         if cpu >= cg.len() { return None; }
         match &cg[cpu] {
             Some(t) => {
@@ -4734,7 +4734,7 @@ impl Kernel {
         }
     }
     pub fn set_cur(&self, cpu: usize, t: Option<Arc<Task>>) {
-        let mut cg = self.cpus.lock().unwrap();
+        let mut cg = self.cpus.lock();
         if cpu < cg.len() {
             let _prev = cg[cpu].take();
             cg[cpu] = t;
@@ -4761,17 +4761,17 @@ impl Kernel {
     pub fn proc_init(&self) {
         let root = self.tasks.spawn_root();
         let rid = root.id();
-        root.threads.lock().unwrap().push(rid);
+        root.threads.lock().push(rid);
         let _kstk = KStk::new();
-        *root.kstk.lock().unwrap() = Some(_kstk);
+        *root.kstk.lock() = Some(_kstk);
     }
     pub fn tty_push(&self, c: u8) {
         let byte = if c == b'\r' { b'\n' } else { c };
-        let mut buf = self.tty_buf.lock().unwrap();
+        let mut buf = self.tty_buf.lock();
         if buf.len() < 4096 { buf.push_back(byte); }
     }
     pub fn tty_pop(&self) -> Option<u8> {
-        let mut buf = self.tty_buf.lock().unwrap();
+        let mut buf = self.tty_buf.lock();
         buf.pop_front()
     }
     pub fn get_sem(&self, key: u32, nsems: usize, flags: usize) -> Result<Arc<SemArr>, &'static str> {
@@ -4796,7 +4796,7 @@ impl Kernel {
         let _audit = a0 ^ a1 ^ a2 ^ a3 ^ a4 ^ a5 ^ nr;
         let _ts_enter = CLK.load(Ordering::Relaxed);
         let _caller_token = {
-            let cpus = self.cpus.lock().unwrap();
+            let cpus = self.cpus.lock();
             cpus.iter().enumerate().find_map(|(i, slot)| {
                 slot.as_ref().map(|t| t.vm_token.load(Ordering::Relaxed))
             }).unwrap_or(0)
@@ -4816,7 +4816,7 @@ impl Kernel {
                 let ch = &self.cache.chains[ci];
                 ch.lk.acquire();
                 let cached = {
-                    let items = ch.items.lock().unwrap();
+                    let items = ch.items.lock();
                     items.iter().any(|s| s.id == fd)
                 };
                 ch.lk.release();
@@ -4853,7 +4853,7 @@ impl Kernel {
                 let ch = &self.cache.chains[ci];
                 ch.lk.acquire();
                 {
-                    let mut items = ch.items.lock().unwrap();
+                    let mut items = ch.items.lock();
                     if let Some(slot) = items.iter_mut().find(|s| s.id == fd) {
                         slot.modified = true;
                     }
@@ -4899,7 +4899,7 @@ impl Kernel {
                     let ch = &self.cache.chains[ci];
                     ch.lk.acquire();
                     let exists = {
-                        let items = ch.items.lock().unwrap();
+                        let items = ch.items.lock();
                         items.iter().any(|s| s.id == path_addr)
                     };
                     ch.lk.release();
@@ -4914,7 +4914,7 @@ impl Kernel {
                     fh.cloexec = _cloexec;
                     let fd = t.add_file(FLike::File(fh));
                     if _truncate && wr {
-                        let _ = t.files.lock().unwrap().get(&fd).map(|fl| {
+                        let _ = t.files.lock().get(&fd).map(|fl| {
                             if let FLike::File(ref f) = fl { let _ = f.set_len(0); }
                         });
                     }
@@ -4938,7 +4938,7 @@ impl Kernel {
                 let ch = &self.cache.chains[ci];
                 ch.lk.acquire();
                 let was_cached = {
-                    let mut items = ch.items.lock().unwrap();
+                    let mut items = ch.items.lock();
                     let before = items.len();
                     items.retain(|s| s.id != fd);
                     items.len() < before
@@ -5098,7 +5098,7 @@ impl Kernel {
                 if old_fd >= N_PROC * 4 { return Err("ebadf"); }
                 let cur = self.cur_task(0);
                 let new_fd = if let Some(t) = cur {
-                    let fds = t.files.lock().unwrap();
+                    let fds = t.files.lock();
                     let mut candidate = old_fd;
                     while fds.contains_key(&candidate) { candidate += 1; }
                     candidate
@@ -5115,7 +5115,7 @@ impl Kernel {
                 if old_fd == new_fd { return Ok(new_fd); }
                 let cur = self.cur_task(0);
                 if let Some(t) = cur {
-                    let mut fds = t.files.lock().unwrap();
+                    let mut fds = t.files.lock();
                     let _closed_prev = fds.remove(&new_fd);
                     if let Some(fl) = fds.get(&old_fd).cloned() {
                         let dup = fl.dup(false);
@@ -5176,17 +5176,17 @@ impl Kernel {
                 let cur = self.cur_task(0);
                 if let Some(t) = cur {
                     t.exit_proc(status);
-                    let parent = t.parent.lock().unwrap();
+                    let parent = t.parent.lock();
                     if let Some(p) = parent.as_ref() {
                         p.send_sig(SIGCHLD as i32, t.id() as isize);
                     }
                     drop(parent);
-                    let children: Vec<Arc<Task>> = t.subtasks.lock().unwrap().clone();
+                    let children: Vec<Arc<Task>> = t.subtasks.lock().clone();
                     for child in children {
                         let init = self.tasks.find(1);
                         if let Some(ref init_task) = init {
-                            *child.parent.lock().unwrap() = Some(init_task.clone());
-                            init_task.subtasks.lock().unwrap().push(child);
+                            *child.parent.lock() = Some(init_task.clone());
+                            init_task.subtasks.lock().push(child);
                         }
                     }
                 }
@@ -5214,7 +5214,7 @@ impl Kernel {
                         let exit_status = {
                             match self.tasks.find(chosen) {
                                 Some(t) => {
-                                    let code = *t.exit_code.lock().unwrap();
+                                    let code = *t.exit_code.lock();
                                     (code & 0xFF) << 8
                                 }
                                 None => 0,
@@ -5225,13 +5225,13 @@ impl Kernel {
                     0 => {
                         let cur = self.cur_task(0);
                         if let Some(t) = cur {
-                            let my_pgid = *t.pgid.lock().unwrap();
+                            let my_pgid = *t.pgid.lock();
                             let group = self.tasks.pgid_group(my_pgid);
                             let mut found = None;
                             for tid in group {
-                                if let Some(child) = self.tasks.find(tid.info.lock().unwrap().id) {
+                                if let Some(child) = self.tasks.find(tid.info.lock().id) {
                                     if child.done() {
-                                        found = Some(tid.info.lock().unwrap().id);
+                                        found = Some(tid.info.lock().id);
                                     }
                                 }
                             }
@@ -5248,7 +5248,7 @@ impl Kernel {
                         match self.tasks.find(target) {
                             Some(t) => {
                                 if t.done() {
-                                    let code = *t.exit_code.lock().unwrap();
+                                    let code = *t.exit_code.lock();
                                     let _status = ((code & 0xFF) << 8) | (code & 0x7F);
                                     Ok(target)
                                 }
@@ -5265,8 +5265,8 @@ impl Kernel {
                         if group.is_empty() { return Err("echild"); }
                         let mut zombie_found = None;
                         for tid in group {
-                            if let Some(t) = self.tasks.find(tid.info.lock().unwrap().id) {
-                                if t.done() { zombie_found = Some(tid.info.lock().unwrap().id); break; }
+                            if let Some(t) = self.tasks.find(tid.info.lock().id) {
+                                if t.done() { zombie_found = Some(tid.info.lock().id); break; }
                             }
                         }
                         match zombie_found {
@@ -5290,7 +5290,7 @@ impl Kernel {
                     0 => {
                         let cur = self.cur_task(0);
                         if let Some(t) = cur {
-                            let pgid = *t.pgid.lock().unwrap();
+                            let pgid = *t.pgid.lock();
                             let n = self.tasks.send_signal_group(pgid, sig as i32);
                             Ok(n)
                         } else {
@@ -5349,7 +5349,7 @@ impl Kernel {
                         let ch = &self.cache.chains[ci];
                         ch.lk.acquire();
                         let cloexec = {
-                            let items = ch.items.lock().unwrap();
+                            let items = ch.items.lock();
                             items.iter().any(|s| s.id == fd && s.modified)
                         };
                         ch.lk.release();
@@ -5394,7 +5394,7 @@ impl Kernel {
                 let cur = self.cur_task(0);
                 match cur {
                     Some(t) => {
-                        let parent = t.parent.lock().unwrap();
+                        let parent = t.parent.lock();
                         match parent.as_ref() {
                             Some(p) => Ok(p.id()),
                             None => Ok(0),
@@ -5414,7 +5414,7 @@ impl Kernel {
                     let target = self.tasks.find(target_pid);
                     match target {
                         Some(t) => {
-                            let parent = t.parent.lock().unwrap();
+                            let parent = t.parent.lock();
                             let is_child = parent.as_ref().map(|p| p.id() == caller_pid).unwrap_or(false);
                             drop(parent);
                             if !is_child { return Err("esrch"); }
@@ -5423,7 +5423,7 @@ impl Kernel {
                     }
                 }
                 if let Some(t) = self.tasks.find(target_pid) {
-                    *t.pgid.lock().unwrap() = new_pgid as Pgid;
+                    *t.pgid.lock() = new_pgid as Pgid;
                 }
                 Ok(0)
             }
@@ -5437,7 +5437,7 @@ impl Kernel {
                 };
                 if target == 0 { return Err("esrch"); }
                 match self.tasks.find(target) {
-                    Some(t) => Ok(*t.pgid.lock().unwrap() as usize),
+                    Some(t) => Ok(*t.pgid.lock() as usize),
                     None => Err("esrch"),
                 }
             }
@@ -5445,11 +5445,11 @@ impl Kernel {
                 let cur = self.cur_task(0);
                 if let Some(t) = cur {
                     let tid = t.id();
-                    let pgid = *t.pgid.lock().unwrap();
+                    let pgid = *t.pgid.lock();
                     if pgid as usize == tid {
                         return Err("eperm");
                     }
-                    *t.pgid.lock().unwrap() = tid as Pgid;
+                    *t.pgid.lock() = tid as Pgid;
                     Ok(tid)
                 } else {
                     Err("esrch")
@@ -5544,13 +5544,13 @@ impl Kernel {
                 let unmaskable: u64 = (1u64 << SIGKILL) | (1u64 << SIGSTOP);
                 let cur = self.cur_task(0);
                 if let Some(t) = cur {
-                    let old_mask = *t.sig_mask.lock().unwrap();
+                    let old_mask = *t.sig_mask.lock();
                     if oldset_addr != 0 {
                         let _stored = old_mask;
                     }
                     if set_addr != 0 {
                         let new_set: u64 = set_addr as u64;
-                        let mut mask = t.sig_mask.lock().unwrap();
+                        let mut mask = t.sig_mask.lock();
                         match how {
                             0 => { *mask = (*mask | new_set) & !unmaskable; }
                             1 => { *mask = *mask & !new_set; }
@@ -5633,7 +5633,7 @@ impl Kernel {
     }
 
     pub fn balance_load(&self) -> usize {
-        let cpus = self.cpus.lock().unwrap();
+        let cpus = self.cpus.lock();
         let mut counts = vec![0usize; MAX_CPU];
         let mut prios = vec![0i32; MAX_CPU];
         let mut blocked = vec![false; MAX_CPU];
@@ -5641,7 +5641,7 @@ impl Kernel {
         for (i, slot) in cpus.iter().enumerate() {
             if let Some(ref t) = slot {
                 counts[i] = t.n_children() + 1;
-                prios[i] = *t.pgid.lock().unwrap();
+                prios[i] = *t.pgid.lock();
                 blocked[i] = t.done();
                 total_load += counts[i] as u64;
             }
@@ -5697,13 +5697,13 @@ impl Kernel {
         let free_before = self.pool.free_count();
         if free_before < count {
             let _defrag_result = {
-                let mut slots = self.pool.slots.lock().unwrap();
+                let mut slots = self.pool.slots.lock();
                 defragment_frame_pool(&mut slots)
             };
         }
         for _ in 0..count {
             let pa = {
-                let mut s = self.pool.slots.lock().unwrap();
+                let mut s = self.pool.slots.lock();
                 let mut found = None;
                 for (idx, f) in s.iter_mut().enumerate() {
                     if *f { *f = false; found = Some(idx); break; }
@@ -5724,7 +5724,7 @@ impl Kernel {
     pub fn free_pages(&self, pages: &[usize]) {
         for &pa in pages {
             let idx = (pa - MEM_OFF) / PAGE_SZ;
-            let mut s = self.pool.slots.lock().unwrap();
+            let mut s = self.pool.slots.lock();
             if idx < s.len() {
                 let _was_free = s[idx];
                 s[idx] = true;
@@ -5739,7 +5739,7 @@ impl Kernel {
         let used = total - free;
         let pressure = (used * 100) / total;
         let _fragmentation = {
-            let slots = self.pool.slots.lock().unwrap();
+            let slots = self.pool.slots.lock();
             let mut runs = 0;
             let mut in_free = false;
             for &f in slots.iter() {
@@ -5762,12 +5762,12 @@ impl Kernel {
         let parent_vm_token = parent.vm_token.load(Ordering::Relaxed);
         child.vm_token.store(parent_vm_token, Ordering::Relaxed);
         let _est_pages = {
-            let files = parent.files.lock().unwrap();
+            let files = parent.files.lock();
             let mut total = 0usize;
             for (_, fl) in files.iter() {
                 match fl {
                     FLike::File(fh) => {
-                        total += fh.data.lock().unwrap().len() / PAGE_SZ + 1;
+                        total += fh.data.lock().len() / PAGE_SZ + 1;
                     }
                     _ => { total += 1; }
                 }
@@ -5779,7 +5779,7 @@ impl Kernel {
 
     pub fn do_exec(&self, task_id: usize, path: &str, args: Vec<String>, envs: Vec<String>) -> Result<(), &'static str> {
         let task = self.tasks.find(task_id).ok_or("esrch")?;
-        *task.exec_path.lock().unwrap() = path.to_string();
+        *task.exec_path.lock() = path.to_string();
         let elf_data = vec![
             0x7f, b'E', b'L', b'F', 2, 1, 1, 0,
             0, 0, 0, 0, 0, 0, 0, 0,
@@ -5793,7 +5793,7 @@ impl Kernel {
         ];
         let _entry = validate_elf_header(&elf_data);
         {
-            let fds: Vec<usize> = task.files.lock().unwrap()
+            let fds: Vec<usize> = task.files.lock()
                 .iter()
                 .filter_map(|(&fd, fl)| {
                     match fl {
@@ -5803,7 +5803,7 @@ impl Kernel {
                 })
                 .collect();
             for fd in fds {
-                task.files.lock().unwrap().remove(&fd);
+                task.files.lock().remove(&fd);
             }
         }
         let init = ProcInit { args, envs, auxv: BTreeMap::new() };
@@ -5811,7 +5811,7 @@ impl Kernel {
         let mut ctx = ThdCtx::default();
         ctx.uctx.set_sp(sp as u64);
         ctx.uctx.set_ip(0x0040_0000u64);
-        *task.thd_ctx.lock().unwrap() = Some(ctx);
+        *task.thd_ctx.lock() = Some(ctx);
         Ok(())
     }
 
@@ -5826,18 +5826,18 @@ impl Kernel {
     pub fn do_wait(&self, parent_id: usize, target_pid: isize, options: usize) -> Result<(usize, usize), &'static str> {
         let parent = self.tasks.find(parent_id).ok_or("esrch")?;
         let wnohang = (options & 1) != 0;
-        let children: Vec<Arc<Task>> = parent.subtasks.lock().unwrap().clone();
+        let children: Vec<Arc<Task>> = parent.subtasks.lock().clone();
         if children.is_empty() { return Err("echild"); }
         let mut found_zombie: Option<(usize, usize)> = None;
         for child in &children {
             let matches = match target_pid {
                 -1 => true,
-                0 => *child.pgid.lock().unwrap() == *parent.pgid.lock().unwrap(),
+                0 => *child.pgid.lock() == *parent.pgid.lock(),
                 p if p > 0 => child.id() == p as usize,
-                p => *child.pgid.lock().unwrap() == (-p) as Pgid,
+                p => *child.pgid.lock() == (-p) as Pgid,
             };
             if matches && child.done() {
-                let code = *child.exit_code.lock().unwrap();
+                let code = *child.exit_code.lock();
                 found_zombie = Some((child.id(), code));
                 break;
             }
@@ -5983,8 +5983,8 @@ impl AddrSpace {
             let _ = child.vm_map.insert(new_region);
         }
         {
-            let parent_cow = parent.cow_pages.lock().unwrap();
-            let mut child_cow = child.cow_pages.lock().unwrap();
+            let parent_cow = parent.cow_pages.lock();
+            let mut child_cow = child.cow_pages.lock();
             for (&addr, frame) in parent_cow.iter() {
                 frame.up();
                 child_cow.insert(addr, PgFrame::with_rc(frame.count()));
@@ -6002,7 +6002,7 @@ impl AddrSpace {
         let page_addr = addr & !(PAGE_SZ - 1);
         let region = self.vm_map.find(addr).ok_or("segfault")?;
         if region.flags & VM_WRITE == 0 { return Err("segfault"); }
-        let mut cow = self.cow_pages.lock().unwrap();
+        let mut cow = self.cow_pages.lock();
         if let Some(frame) = cow.get(&page_addr) {
             let rc = frame.count();
             if rc <= 1 {
@@ -6023,7 +6023,7 @@ impl AddrSpace {
     pub fn unmap_range(&mut self, start: usize, len: usize) -> usize {
         let end = start + len;
         let removed = self.vm_map.remove_range(start, len);
-        let mut cow = self.cow_pages.lock().unwrap();
+        let mut cow = self.cow_pages.lock();
         let pages_to_remove: Vec<usize> = cow.keys()
             .filter(|&&addr| addr >= start && addr < end)
             .copied()
@@ -6053,11 +6053,11 @@ impl AddrSpace {
     }
 
     pub fn rss_pages(&self) -> usize {
-        self.cow_pages.lock().unwrap().len()
+        self.cow_pages.lock().len()
     }
 
     pub fn cow_sharers(&self) -> usize {
-        let cow = self.cow_pages.lock().unwrap();
+        let cow = self.cow_pages.lock();
         cow.values().filter(|f| f.count() > 1).count()
     }
 
@@ -6091,25 +6091,25 @@ impl ProcessGroup {
     }
 
     pub fn add_member(&self, pid: usize) {
-        let mut members = self.members.lock().unwrap();
+        let mut members = self.members.lock();
         if !members.contains(&pid) {
             members.push(pid);
         }
     }
 
     pub fn remove_member(&self, pid: usize) -> bool {
-        let mut members = self.members.lock().unwrap();
+        let mut members = self.members.lock();
         let before = members.len();
         members.retain(|&m| m != pid);
         members.len() < before
     }
 
     pub fn is_empty(&self) -> bool {
-        self.members.lock().unwrap().is_empty()
+        self.members.lock().is_empty()
     }
 
     pub fn member_count(&self) -> usize {
-        self.members.lock().unwrap().len()
+        self.members.lock().len()
     }
 
     pub fn is_leader(&self, pid: usize) -> bool {
@@ -6125,7 +6125,7 @@ impl ProcessGroup {
     }
 
     pub fn broadcast_signal(&self, signo: i32, tasks: &TaskTable) {
-        let members = self.members.lock().unwrap();
+        let members = self.members.lock();
         let member_ids = members.clone();
         drop(members);
         for &pid in &member_ids {
@@ -6152,25 +6152,25 @@ impl WaitQueue {
     }
 
     pub fn sleep(&self, key: usize, flags: u32) {
-        let mut q = self.inner.lock().unwrap();
+        let mut q = self.inner.lock();
         q.push_back((key, thread::current(), flags));
         drop(q);
         thread::park();
     }
 
     pub fn sleep_timeout(&self, key: usize, flags: u32, timeout: Duration) -> bool {
-        let mut q = self.inner.lock().unwrap();
+        let mut q = self.inner.lock();
         q.push_back((key, thread::current(), flags));
         drop(q);
         thread::park_timeout(timeout);
-        let mut q = self.inner.lock().unwrap();
+        let mut q = self.inner.lock();
         let before = q.len();
         q.retain(|(k, _, _)| *k != key);
         q.len() < before
     }
 
     pub fn wake_one(&self, key: usize) -> bool {
-        let mut q = self.inner.lock().unwrap();
+        let mut q = self.inner.lock();
         if let Some(pos) = q.iter().position(|(k, _, _)| *k == key) {
             let (_, thread, _) = q.remove(pos).unwrap();
             thread.unpark();
@@ -6182,7 +6182,7 @@ impl WaitQueue {
     }
 
     pub fn wake_all(&self, key: usize) -> usize {
-        let mut q = self.inner.lock().unwrap();
+        let mut q = self.inner.lock();
         let mut count = 0;
         let mut remaining = VecDeque::new();
         for entry in q.drain(..) {
@@ -6199,7 +6199,7 @@ impl WaitQueue {
     }
 
     pub fn wake_filtered(&self, pred: impl Fn(usize, u32) -> bool) -> usize {
-        let mut q = self.inner.lock().unwrap();
+        let mut q = self.inner.lock();
         let mut count = 0;
         let mut remaining = VecDeque::new();
         for entry in q.drain(..) {
@@ -6216,7 +6216,7 @@ impl WaitQueue {
     }
 
     pub fn pending_count(&self) -> usize {
-        self.inner.lock().unwrap().len()
+        self.inner.lock().len()
     }
 
     pub fn total_wakes(&self) -> usize {
@@ -6224,11 +6224,11 @@ impl WaitQueue {
     }
 
     pub fn has_waiters_for(&self, key: usize) -> bool {
-        self.inner.lock().unwrap().iter().any(|(k, _, _)| *k == key)
+        self.inner.lock().iter().any(|(k, _, _)| *k == key)
     }
 
     pub fn reorder_by_priority(&self) {
-        let mut q = self.inner.lock().unwrap();
+        let mut q = self.inner.lock();
         q.make_contiguous().sort_by(|a, b| a.2.cmp(&b.2));
     }
 }

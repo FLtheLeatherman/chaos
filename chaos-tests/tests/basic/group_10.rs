@@ -20,7 +20,7 @@ fn basic_zombie_single_child() {
     let child_id = child.id();
     let root_id = root.id();
 
-    assert!(child.parent.lock().unwrap().is_some());
+    assert!(child.parent.lock().is_some());
 
     tt.reap(child_id);
 

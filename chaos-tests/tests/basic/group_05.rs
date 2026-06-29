@@ -28,6 +28,6 @@ fn basic_stale_weak_upgrade() {
     let stale_ref = a.clone();
     tt.reap(id_a);
     let b = tt.spawn("B");
-    assert_eq!(stale_ref.info.lock().unwrap().status, Some(0));
+    assert_eq!(stale_ref.info.lock().status, Some(0));
     assert_ne!(b.id(), stale_ref.id());
 }
