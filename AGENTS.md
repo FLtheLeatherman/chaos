@@ -4,6 +4,12 @@
 
 Chaos is currently a mixed repository: it contains a real rCore-derived kernel tree and a large host-side kernel simulation in `kernel/src/kernel.rs`. The immediate engineering goal is no longer only debugging `kernel.rs`; it is to split that monolith into real kernel components that can live with the rest of `kernel/src/` and eventually boot under QEMU.
 
+## Current Task Focus
+
+The current working task is to understand the code that has been split into `chaos-tests/src/`. Treat `chaos-tests` as the main reading target: trace functions, explain behavior, identify dead or placeholder logic, and connect each piece back to the simulation test surface. Do not assume every turn is asking for more migration work; when the user asks about a function or module, inspect the local `chaos-tests/src/` implementation and its call sites first, then explain it concretely.
+
+Code changes are still appropriate when the user asks for cleanup or clarification, but keep them tightly scoped to the discussed `chaos-tests` behavior unless the user explicitly asks to resume kernel-module migration.
+
 Keep the two worlds distinct while refactoring:
 
 - `kernel/src/kernel.rs` is a `std`-using simulation crate entry, imported by `chaos-tests/src/lib.rs` through a symlink. It exists to preserve the current test surface.

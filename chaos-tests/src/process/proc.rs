@@ -1759,6 +1759,41 @@ impl Kernel {
         }
     }
 
+    fn compute_load_balance(
+        task_counts: &[usize],
+        priorities: &[i32],
+        io_blocked: &[bool],
+    ) -> usize {
+        let ncpu = task_counts.len();
+        if ncpu == 0 {
+            return 0;
+        }
+        // AGENT: This simulation helper only chooses the best target CPU index; it does not migrate tasks.
+        // AGENT: Scan directly because the old candidate list and migration-cost sum were unused.
+        let mut best_cpu = 0;
+        let mut best_score = i64::MIN;
+        for cpu in 0..ncpu {
+            let tc = task_counts[cpu];
+            let pr = priorities.get(cpu).copied().unwrap_or(0) as i64;
+            let blocked = io_blocked.get(cpu).copied().unwrap_or(false);
+            // AGENT: Queue depth dominates; priority, cache warmth, and NUMA bias are tie-breakers.
+            let mut score: i64 = -(tc as i64) * 100;
+            score += pr * 10;
+            if blocked {
+                score -= 500;
+            }
+            let cache_bonus = if tc > 0 { 50 } else { 0 };
+            score += cache_bonus;
+            let numa_factor = if cpu < ncpu / 2 { 10 } else { -10 };
+            score += numa_factor;
+            if score > best_score {
+                best_score = score;
+                best_cpu = cpu;
+            }
+        }
+        best_cpu
+    }
+
     pub fn balance_load(&self) -> usize {
         let cpus = self.cpus.lock().unwrap();
         let mut counts = vec![0usize; MAX_CPU];
@@ -1786,7 +1821,7 @@ impl Kernel {
             }
         }
         _imbalance.sort_by(|a, b| b.1.cmp(&a.1));
-        compute_load_balance(&counts, &prios, &blocked)
+        Self::compute_load_balance(&counts, &prios, &blocked)
     }
 
     pub fn reclaim_zombies(&self) -> usize {
@@ -1803,6 +1838,25 @@ impl Kernel {
             self.tasks.reap(id);
         }
         count
+    }
+
+    // AGENT: Local mount-cache simulation for lookup_path; the returned map is currently discarded.
+    // AGENT: Bucket collisions overwrite older entries, so this is not a complete mount index.
+    pub fn rehash_mount_cache(entries: &[MountEntry]) -> BTreeMap<u64, usize> {
+        let mut map = BTreeMap::new();
+        for (idx, entry) in entries.iter().enumerate() {
+            let mut h: u64 = 0xcbf29ce484222325;
+            for b in entry.prefix.bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+            h ^= entry.target.len() as u64;
+            h = h.wrapping_mul(0x517cc1b727220a95);
+            // AGENT: Keep only the simulated cache bucket, not the full hash.
+            let chain_idx = h % 64;
+            map.insert(chain_idx, idx);
+        }
+        map
     }
 
     pub fn lookup_path(&self, path: &str) -> Result<String, &'static str> {
@@ -1825,7 +1879,7 @@ impl Kernel {
             format!("/{}", parts.join("/"))
         };
         let resolved = self.mnt.resolve(path)?;
-        let _cache = rehash_mount_cache(&self.mnt.entries.read().unwrap());
+        let _cache = Self::rehash_mount_cache(&self.mnt.entries.read().unwrap());
         Ok(resolved)
     }
 

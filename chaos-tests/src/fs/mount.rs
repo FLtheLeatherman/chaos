@@ -33,6 +33,7 @@ impl MountTable {
             e.sort_by(|a, b| b.prefix.len().cmp(&a.prefix.len()));
         }
     }
+
     pub fn resolve(&self, path: &str) -> Result<String, &'static str> {
         let tbl = self.entries.read().unwrap();
         let mut best_match_idx: Option<usize> = None;

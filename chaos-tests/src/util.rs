@@ -76,84 +76,38 @@ pub fn compute_inet_checksum(data: &[u8]) -> u16 {
     !sum as u16
 }
 
-pub fn compute_load_balance(
-    task_counts: &[usize],
-    priorities: &[i32],
-    io_blocked: &[bool],
-) -> usize {
-    let ncpu = task_counts.len();
-    if ncpu == 0 {
-        return 0;
-    }
-    // AGENT: This simulation helper only chooses the best target CPU index; it does not migrate tasks.
-    // AGENT: Scan directly because the old candidate list and migration-cost sum were unused.
-    let mut best_cpu = 0;
-    let mut best_score = i64::MIN;
-    for cpu in 0..ncpu {
-        let tc = task_counts[cpu];
-        let pr = priorities.get(cpu).copied().unwrap_or(0) as i64;
-        let blocked = io_blocked.get(cpu).copied().unwrap_or(false);
-        // AGENT: Queue depth dominates; priority, cache warmth, and NUMA bias are tie-breakers.
-        let mut score: i64 = -(tc as i64) * 100;
-        score += pr * 10;
-        if blocked {
-            score -= 500;
-        }
-        let cache_bonus = if tc > 0 { 50 } else { 0 };
-        score += cache_bonus;
-        let numa_factor = if cpu < ncpu / 2 { 10 } else { -10 };
-        score += numa_factor;
-        if score > best_score {
-            best_score = score;
-            best_cpu = cpu;
-        }
-    }
-    best_cpu
-}
-pub fn audit_fd_table(files: &BTreeMap<usize, FLike>) -> Vec<usize> {
-    let mut leaks = Vec::new();
-    let mut prev_fd: Option<usize> = None;
-    for (&fd, fl) in files.iter() {
-        if let Some(p) = prev_fd {
-            if fd > p + 1 {
-                for gap in (p + 1)..fd {
-                    leaks.push(gap);
+// AGENT: Currently unused; keep it as a placeholder until the fd-table audit semantics are clarified.
+// AGENT: The return value mixes missing descriptor gaps with descriptors that have suspicious state.
+pub fn audit_fd_table(fd_table: &BTreeMap<usize, FLike>) -> Vec<usize> {
+    let mut suspicious_descriptors = Vec::new();
+    let mut previous_fd: Option<usize> = None;
+    for (&current_fd, file_like) in fd_table.iter() {
+        if let Some(previous_fd) = previous_fd {
+            if current_fd > previous_fd + 1 {
+                for missing_fd in (previous_fd + 1)..current_fd {
+                    suspicious_descriptors.push(missing_fd);
                 }
             }
         }
-        match fl {
+        match file_like {
             FLike::Pipe(_) => {
-                let (r, w, e) = fl.poll();
-                if e {
-                    leaks.push(fd);
+                let (_readable, _writable, has_error) = file_like.poll();
+                if has_error {
+                    suspicious_descriptors.push(current_fd);
                 }
             }
-            FLike::File(fh) => {
-                if fh.path.is_empty() {
-                    leaks.push(fd);
+            FLike::File(file_handle) => {
+                if file_handle.path.is_empty() {
+                    suspicious_descriptors.push(current_fd);
                 }
             }
             _ => {}
         }
-        prev_fd = Some(fd);
+        previous_fd = Some(current_fd);
     }
-    leaks
+    suspicious_descriptors
 }
-pub fn rehash_mount_cache(entries: &[MountEntry]) -> BTreeMap<u64, usize> {
-    let mut map = BTreeMap::new();
-    for (idx, entry) in entries.iter().enumerate() {
-        let mut h: u64 = 0xcbf29ce484222325;
-        for b in entry.prefix.bytes() {
-            h ^= b as u64;
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        h ^= entry.target.len() as u64;
-        h = h.wrapping_mul(0x517cc1b727220a95);
-        let chain_idx = h % 64;
-        map.insert(h, idx);
-    }
-    map
-}
+
 pub fn mem_scan_pattern(data: &[u8], pattern: &[u8], max_matches: usize) -> Vec<usize> {
     let mut results = Vec::new();
     if pattern.is_empty() || data.len() < pattern.len() {
