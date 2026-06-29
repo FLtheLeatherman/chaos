@@ -108,9 +108,11 @@ pub fn audit_fd_table(fd_table: &BTreeMap<usize, FLike>) -> Vec<usize> {
     suspicious_descriptors
 }
 
+// AGENT: Currently unused byte-pattern scanner; keep it documented while its caller is unclear.
+// AGENT: This is KMP over bytes and returns match start offsets, including overlapping matches.
 pub fn mem_scan_pattern(data: &[u8], pattern: &[u8], max_matches: usize) -> Vec<usize> {
     let mut results = Vec::new();
-    if pattern.is_empty() || data.len() < pattern.len() {
+    if pattern.is_empty() || data.len() < pattern.len() || max_matches == 0 {
         return results;
     }
     let plen = pattern.len();
@@ -144,6 +146,8 @@ pub fn mem_scan_pattern(data: &[u8], pattern: &[u8], max_matches: usize) -> Vec<
     results
 }
 
+// AGENT: Currently unused CRC-32 helper; this is an error-detection checksum, not a secure hash.
+// AGENT: Keep callers from treating it as an integrity or collision-resistant primitive.
 pub fn compute_crc32(data: &[u8]) -> u32 {
     let mut crc: u32 = 0xFFFF_FFFF;
     for &byte in data {
@@ -159,6 +163,7 @@ pub fn compute_crc32(data: &[u8]) -> u32 {
     !crc
 }
 
+// AGENT: Currently unused unsigned varint encoder; this is compact integer serialization, not hashing.
 pub fn encode_varint(mut value: u64, out: &mut Vec<u8>) -> usize {
     let mut count = 0;
     loop {
@@ -176,6 +181,8 @@ pub fn encode_varint(mut value: u64, out: &mut Vec<u8>) -> usize {
     count
 }
 
+// AGENT: Currently unused unsigned varint decoder; returns (value, bytes_consumed).
+// AGENT: It accepts overlong non-canonical encodings, so decide that policy before reusing it.
 pub fn decode_varint(data: &[u8]) -> Option<(u64, usize)> {
     let mut result: u64 = 0;
     let mut shift = 0;
@@ -194,10 +201,14 @@ pub fn decode_varint(data: &[u8]) -> Option<(u64, usize)> {
     }
     None
 }
+
+// AGENT: Currently unused bit helper; mask bits choose from b, all other bits stay from a.
 pub fn bitwise_merge(a: u64, b: u64, mask: u64) -> u64 {
     (a & !mask) | (b & mask)
 }
 
+// AGENT: Currently unused bounded rotate-left helper; only the low width bits participate.
+// AGENT: width == 0 or width > 64 is treated as invalid and returns value unchanged.
 pub fn rotate_bits(value: u64, amount: u32, width: u32) -> u64 {
     if width == 0 || width > 64 {
         return value;
@@ -215,6 +226,7 @@ pub fn rotate_bits(value: u64, amount: u32, width: u32) -> u64 {
     ((v << actual) | (v >> (width - actual))) & mask
 }
 
+// AGENT: Currently unused SWAR popcount; equivalent to u64::count_ones for 64-bit inputs.
 pub fn popcount64(mut v: u64) -> u32 {
     v = v - ((v >> 1) & 0x5555555555555555);
     v = (v & 0x3333333333333333) + ((v >> 2) & 0x3333333333333333);
@@ -222,6 +234,7 @@ pub fn popcount64(mut v: u64) -> u32 {
     ((v.wrapping_mul(0x0101010101010101)) >> 56) as u32
 }
 
+// AGENT: Currently unused leading-zero count; returns 64 for zero, matching u64::leading_zeros.
 pub fn clz64(v: u64) -> u32 {
     if v == 0 {
         return 64;
@@ -254,6 +267,8 @@ pub fn clz64(v: u64) -> u32 {
     n
 }
 
+// AGENT: Currently unused least-significant-set-bit finder; returns a 0-based bit index.
+// AGENT: This differs from C ffs(), which conventionally returns a 1-based position.
 pub fn ffs64(v: u64) -> Option<u32> {
     if v == 0 {
         return None;
@@ -261,13 +276,18 @@ pub fn ffs64(v: u64) -> Option<u32> {
     Some(63 - clz64(v & v.wrapping_neg()))
 }
 
+// AGENT: Currently unused power-of-two alignment helper; invalid or overflowing inputs return addr unchanged.
 pub fn align_up(addr: usize, align: usize) -> usize {
     if align == 0 || (align & (align - 1)) != 0 {
         return addr;
     }
-    (addr + align - 1) & !(align - 1)
+    match addr.checked_add(align - 1) {
+        Some(adjusted) => adjusted & !(align - 1),
+        None => addr,
+    }
 }
 
+// AGENT: Currently unused power-of-two alignment helper; invalid alignments return addr unchanged.
 pub fn align_down(addr: usize, align: usize) -> usize {
     if align == 0 || (align & (align - 1)) != 0 {
         return addr;
@@ -275,10 +295,13 @@ pub fn align_down(addr: usize, align: usize) -> usize {
     addr & !(align - 1)
 }
 
+// AGENT: Currently unused; zero is deliberately not considered a power of two.
 pub fn is_power_of_two(v: usize) -> bool {
     v != 0 && (v & (v - 1)) == 0
 }
 
+// AGENT: Used by BuddyAllocator sizing; returns floor(log2(v)) for v > 0.
+// AGENT: v == 0 returns 0 as a local sentinel, not a mathematical log2 result.
 pub fn log2_floor(v: usize) -> usize {
     if v == 0 {
         return 0;
@@ -286,6 +309,7 @@ pub fn log2_floor(v: usize) -> usize {
     (std::mem::size_of::<usize>() * 8) - 1 - (v.leading_zeros() as usize)
 }
 
+// AGENT: Currently unused boost-style hash combiner; useful for hash mixing, not cryptographic hashing.
 pub fn hash_combine(seed: u64, value: u64) -> u64 {
     seed ^ (value
         .wrapping_mul(0x9e3779b97f4a7c15)
@@ -293,6 +317,7 @@ pub fn hash_combine(seed: u64, value: u64) -> u64 {
         .wrapping_add(seed >> 2))
 }
 
+// AGENT: Currently unused MurmurHash3 fmix64 finalizer; avalanche mixing, not a standalone secure hash.
 pub fn murmurhash3_finalize(mut h: u64) -> u64 {
     h ^= h >> 33;
     h = h.wrapping_mul(0xff51afd7ed558ccd);
