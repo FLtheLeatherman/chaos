@@ -1,5 +1,5 @@
 use chaos_tests::*;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 fn run_with_timeout<F: FnOnce() + Send + 'static>(f: F, ms: u64) -> bool {
@@ -41,7 +41,7 @@ fn basic_spurious_wakeup_no_recheck() {
     q.broadcast();
 
     let returned = consumer.join().unwrap();
-    let actual = *m.lock();
+    let actual = *m.lock().unwrap();
 
     assert_eq!(returned, actual);
 }
@@ -63,7 +63,7 @@ fn basic_producer_consumer_single() {
         });
 
         std::thread::yield_now();
-        *m_c.lock() = Some(42);
+        *m_c.lock().unwrap() = Some(42);
         q_c.signal();
 
         consumer.join().unwrap();
