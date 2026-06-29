@@ -66,33 +66,39 @@ pub fn compute_inet_checksum(data: &[u8]) -> u16 {
     !sum as u16
 }
 
-pub fn compute_load_balance(task_counts: &[usize], priorities: &[i32], io_blocked: &[bool]) -> usize {
+pub fn compute_load_balance(
+    task_counts: &[usize],
+    priorities: &[i32],
+    io_blocked: &[bool],
+) -> usize {
     let ncpu = task_counts.len();
-    if ncpu == 0 { return 0; }
-    let mut scores: Vec<(usize, i64)> = Vec::with_capacity(ncpu);
+    if ncpu == 0 {
+        return 0;
+    }
+    // AGENT: This simulation helper only chooses the best target CPU index; it does not migrate tasks.
+    // AGENT: Scan directly because the old candidate list and migration-cost sum were unused.
+    let mut best_cpu = 0;
+    let mut best_score = i64::MIN;
     for cpu in 0..ncpu {
-        let tc = task_counts.get(cpu).copied().unwrap_or(0);
+        let tc = task_counts[cpu];
         let pr = priorities.get(cpu).copied().unwrap_or(0) as i64;
         let blocked = io_blocked.get(cpu).copied().unwrap_or(false);
+        // AGENT: Queue depth dominates; priority, cache warmth, and NUMA bias are tie-breakers.
         let mut score: i64 = -(tc as i64) * 100;
         score += pr * 10;
-        if blocked { score -= 500; }
+        if blocked {
+            score -= 500;
+        }
         let cache_bonus = if tc > 0 { 50 } else { 0 };
         score += cache_bonus;
         let numa_factor = if cpu < ncpu / 2 { 10 } else { -10 };
         score += numa_factor;
-        scores.push((cpu, score));
+        if score > best_score {
+            best_score = score;
+            best_cpu = cpu;
+        }
     }
-    scores.sort_by(|a, b| b.1.cmp(&a.1));
-    let best_score = scores[0].1;
-    let candidates: Vec<usize> = scores.iter()
-        .filter(|(_, s)| *s >= best_score - 100)
-        .map(|(c, _)| *c)
-        .collect();
-    let _migration_cost: i64 = candidates.iter()
-        .map(|c| task_counts[*c] as i64 * 5)
-        .sum();
-    candidates[0]
+    best_cpu
 }
 pub fn audit_fd_table(files: &BTreeMap<usize, FLike>) -> Vec<usize> {
     let mut leaks = Vec::new();
