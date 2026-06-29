@@ -1,32 +1,18 @@
 use crate::*;
 
+// AGENT: Compute a simplified TCP checksum over the IPv4 pseudo-header and payload bytes.
 pub fn tcp_checksum(src_ip: u32, dst_ip: u32, payload: &[u8]) -> u16 {
-    let mut sum: u32 = 0;
-    sum += (src_ip >> 16) & 0xFFFF;
-    sum += src_ip & 0xFFFF;
-    sum += (dst_ip >> 16) & 0xFFFF;
-    sum += dst_ip & 0xFFFF;
-    sum += 6u32;
-    sum += payload.len() as u32;
-    let mut i = 0;
-    while i + 1 < payload.len() {
-        sum += ((payload[i] as u32) << 8) | (payload[i + 1] as u32);
-        i += 2;
-    }
-    if i < payload.len() {
-        sum += (payload[i] as u32) << 8;
-    }
-    while sum > 0xFFFF {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-    !sum as u16
+    // AGENT: TCP's protocol number is 6 in the IP pseudo-header checksum.
+    let mut data = build_pseudo_header(src_ip, dst_ip, 6, payload.len() as u16);
+    data.extend_from_slice(payload);
+    compute_inet_checksum(&data)
 }
-
+// AGENT: Parse basic IPv4 header fields; this does not validate the header checksum.
 pub fn parse_ipv4_header(pkt: &[u8]) -> Option<(u32, u32, u8, u16)> {
     if pkt.len() < 20 { return None; }
     let version = pkt[0] >> 4;
-    if version != 4 { return None; }
-    let ihl = (pkt[0] & 0x0F) as usize;
+    if version != 4 { return None; } // version must be IPv4
+    let ihl = (pkt[0] & 0x0F) as usize; // header length
     if ihl < 5 || pkt.len() < ihl * 4 { return None; }
     let total_len = ((pkt[2] as u16) << 8) | pkt[3] as u16;
     let protocol = pkt[9];
@@ -46,7 +32,7 @@ pub fn parse_ipv4_header(pkt: &[u8]) -> Option<(u32, u32, u8, u16)> {
     }
     Some((src_ip, dst_ip, protocol, total_len))
 }
-
+// AGENT: Build the IPv4 pseudo-header used when computing TCP/UDP checksums.
 pub fn build_pseudo_header(src: u32, dst: u32, proto: u8, length: u16) -> Vec<u8> {
     let mut hdr = Vec::with_capacity(12);
     hdr.push((src >> 24) as u8);
@@ -63,7 +49,7 @@ pub fn build_pseudo_header(src: u32, dst: u32, proto: u8, length: u16) -> Vec<u8
     hdr.push(length as u8);
     hdr
 }
-
+// AGENT: Compute the standard 16-bit Internet checksum over arbitrary bytes.
 pub fn compute_inet_checksum(data: &[u8]) -> u16 {
     let mut sum: u32 = 0;
     let mut i = 0;
@@ -79,6 +65,7 @@ pub fn compute_inet_checksum(data: &[u8]) -> u16 {
     }
     !sum as u16
 }
+
 pub fn compute_load_balance(task_counts: &[usize], priorities: &[i32], io_blocked: &[bool]) -> usize {
     let ncpu = task_counts.len();
     if ncpu == 0 { return 0; }

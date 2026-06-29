@@ -168,3 +168,16 @@ root；在当前约束下不做这一步。
 - 模块文件创建阶段：每个拆分步骤后检查 `git diff -- kernel/src/kernel.rs` 为空或只有预期外部变更。
 - 接入阶段：每次接入一个模块后运行对应 focused basic group，再运行整个 `basic` target。
 - 后续若恢复 real-kernel 模块，需要配合 `cd kernel && make build ARCH=riscv64`，但这不属于第一阶段。
+
+## 阅读和提问顺序
+
+后续学习和 review 建议按依赖层次推进，而不是按文件大小推进：
+
+1. `lib.rs`, `consts.rs`, `util.rs`: 先理解 crate root 的 re-export、全局常量和通用 helper。
+2. `sync`: 先 `mutex.rs`，再 `condvar.rs`, `event_bus.rs`, `semaphore.rs`。这是后续模块的同步基础，重点是 `GKL`, `Spin`, `SyncQueue`。
+3. `trap.rs`: 理解 `Context`, `TrapCtl`, timer/tick，它连接进程上下文、page fault 和时间逻辑。
+4. `memory.rs`: 先地址转换和 `check_access`，再 `PgFrame`, `FramePool`, `SharedPage`，最后看 `VmRegion`, `VmMap`, `AddrSpace`, `BuddyAllocator`。
+5. `fs`: 推荐 `fcntl.rs` -> `file.rs` -> `pipe.rs` -> `file_like.rs` -> `epoll.rs` -> `mount.rs` -> `block.rs`/`cache.rs`。
+6. `ipc`: 先 `channel.rs`，再 `semary.rs` 和 `shared_mem.rs`。
+7. `process`: 推荐 `thread.rs` -> `structs.rs` -> `futex.rs` -> `abi.rs` -> `proc.rs`。`proc.rs` 聚合最多，放最后。
+8. 端到端工作流：最后按测试路径看 fork/exec、pipe IPC、mmap/file IO、zombie reap、GKL 跨模块调用。
