@@ -22,5 +22,8 @@ fn tcp_checksum_matches_pseudo_header_plus_inet_checksum() {
     let mut data = build_pseudo_header(src_ip, dst_ip, 6, payload.len() as u16);
     data.extend_from_slice(&payload);
 
-    assert_eq!(tcp_checksum(src_ip, dst_ip, &payload), compute_inet_checksum(&data));
+    assert_eq!(
+        tcp_checksum(src_ip, dst_ip, &payload),
+        compute_inet_checksum(&data)
+    );
 }

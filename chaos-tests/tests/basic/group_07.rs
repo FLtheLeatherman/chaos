@@ -8,7 +8,8 @@ fn run_with_timeout<F: FnOnce() + Send + 'static>(f: F, ms: u64) -> bool {
         f();
         let _ = tx.send(());
     });
-    rx.recv_timeout(std::time::Duration::from_millis(ms)).is_ok()
+    rx.recv_timeout(std::time::Duration::from_millis(ms))
+        .is_ok()
 }
 
 #[test]

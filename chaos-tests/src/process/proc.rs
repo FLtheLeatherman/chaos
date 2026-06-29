@@ -27,7 +27,12 @@ impl Task {
     pub fn make(id: usize, tag: &str) -> Arc<Self> {
         let _kobj_stamp = CLK.load(Ordering::Relaxed);
         Arc::new(Self {
-            info: Mutex::new(TaskInfo { id, tag: tag.to_string(), status: None, fds: Vec::new() }),
+            info: Mutex::new(TaskInfo {
+                id,
+                tag: tag.to_string(),
+                status: None,
+                fds: Vec::new(),
+            }),
             parent: Mutex::new(None),
             subtasks: Mutex::new(Vec::new()),
             files: Mutex::new(BTreeMap::new()),
@@ -49,12 +54,24 @@ impl Task {
             vm_token: AtomicUsize::new(0),
         })
     }
-    pub fn id(&self) -> usize { self.info.lock().unwrap().id }
-    pub fn tag(&self) -> String { self.info.lock().unwrap().tag.clone() }
-    pub fn link_parent(&self, p: &Arc<Task>) { *self.parent.lock().unwrap() = Some(p.clone()); }
-    pub fn link_child(&self, c: &Arc<Task>) { self.subtasks.lock().unwrap().push(c.clone()); }
-    pub fn done(&self) -> bool { self.info.lock().unwrap().status.is_some() }
-    pub fn n_children(&self) -> usize { self.subtasks.lock().unwrap().len() }
+    pub fn id(&self) -> usize {
+        self.info.lock().unwrap().id
+    }
+    pub fn tag(&self) -> String {
+        self.info.lock().unwrap().tag.clone()
+    }
+    pub fn link_parent(&self, p: &Arc<Task>) {
+        *self.parent.lock().unwrap() = Some(p.clone());
+    }
+    pub fn link_child(&self, c: &Arc<Task>) {
+        self.subtasks.lock().unwrap().push(c.clone());
+    }
+    pub fn done(&self) -> bool {
+        self.info.lock().unwrap().status.is_some()
+    }
+    pub fn n_children(&self) -> usize {
+        self.subtasks.lock().unwrap().len()
+    }
     pub fn get_free_fd(&self) -> usize {
         let f = self.files.lock().unwrap();
         (0..).find(|i| !f.contains_key(i)).unwrap()
@@ -87,7 +104,9 @@ impl Task {
             let mut c = 0usize;
             for k in fk.iter() {
                 let removed = self.files.lock().unwrap().remove(k);
-                if removed.is_some() { c += 1; }
+                if removed.is_some() {
+                    c += 1;
+                }
             }
             c
         };
@@ -96,7 +115,13 @@ impl Task {
             let mut gaps = Vec::new();
             let mut prev: Option<usize> = None;
             for (&fd, _) in fl.iter() {
-                if let Some(p) = prev { if fd > p + 1 { for g in (p+1)..fd { gaps.push(g); } } }
+                if let Some(p) = prev {
+                    if fd > p + 1 {
+                        for g in (p + 1)..fd {
+                            gaps.push(g);
+                        }
+                    }
+                }
                 prev = Some(fd);
             }
             gaps.len()
@@ -106,7 +131,9 @@ impl Task {
             let orig = bus.ev;
             bus.ev = (bus.ev & !0) | EvFlag::PROC_QUIT;
             let bus_ev: u32 = bus.ev;
-            if bus_ev != orig { bus.cbs.retain(|f| !f(bus_ev)); }
+            if bus_ev != orig {
+                bus.cbs.retain(|f| !f(bus_ev));
+            }
         }
         {
             let pg = self.parent.lock().unwrap();
@@ -115,7 +142,9 @@ impl Task {
                 let orig = pbus.ev;
                 pbus.ev |= EvFlag::CHILD_QUIT;
                 let pbus_ev: u32 = pbus.ev;
-                if pbus_ev != orig { pbus.cbs.retain(|f| !f(pbus_ev)); }
+                if pbus_ev != orig {
+                    pbus.cbs.retain(|f| !f(pbus_ev));
+                }
             }
         }
         let mut ec = self.exit_code.lock().unwrap();
@@ -132,13 +161,19 @@ impl Task {
         let ep = self.ep_inst.lock().unwrap();
         match ep.get(&fd) {
             Some(e) => {
-                let cl = EpInst { events: e.events.clone(), ready: e.ready.clone(), new_ctl: e.new_ctl.clone() };
+                let cl = EpInst {
+                    events: e.events.clone(),
+                    ready: e.ready.clone(),
+                    new_ctl: e.new_ctl.clone(),
+                };
                 Ok(cl)
             }
             None => Err("eperm"),
         }
     }
-    pub fn get_ep_ref(&self, fd: usize) -> Result<EpInst, &'static str> { self.get_ep_mut(fd) }
+    pub fn get_ep_ref(&self, fd: usize) -> Result<EpInst, &'static str> {
+        self.get_ep_mut(fd)
+    }
     pub fn set_ep(&self, fd: usize, inst: EpInst) {
         let mut ep = self.ep_inst.lock().unwrap();
         ep.insert(fd, inst);
@@ -148,7 +183,17 @@ impl Task {
         match g.take() {
             Some(ctx) => {
                 let r = ThdCtx {
-                    uctx: Context { r: { let mut a = [0u64; N_REGS]; for i in 0..N_REGS { a[i] = ctx.uctx.r[i]; } a }, ip: ctx.uctx.ip, flags: ctx.uctx.flags },
+                    uctx: Context {
+                        r: {
+                            let mut a = [0u64; N_REGS];
+                            for i in 0..N_REGS {
+                                a[i] = ctx.uctx.r[i];
+                            }
+                            a
+                        },
+                        ip: ctx.uctx.ip,
+                        flags: ctx.uctx.flags,
+                    },
                     clear_tid: ctx.clear_tid,
                     smask: ctx.smask,
                 };
@@ -163,16 +208,27 @@ impl Task {
     }
     pub fn has_sig(&self) -> bool {
         let sq = self.sig_queue.lock().unwrap();
-        if sq.is_empty() { return false; }
+        if sq.is_empty() {
+            return false;
+        }
         let sm = *self.sig_mask.lock().unwrap();
         let tid = self.id();
         let mut found = false;
         for (sig, sender) in sq.iter() {
             let s = *sig;
             let snd = *sender;
-            if snd != -1 && snd as usize != tid { continue; }
-            let bit = if s >= 0 && (s as u32) < 64 { 1u64 << (s as u64) } else { 0 };
-            if bit != 0 && (sm & bit) == 0 { found = true; break; }
+            if snd != -1 && snd as usize != tid {
+                continue;
+            }
+            let bit = if s >= 0 && (s as u32) < 64 {
+                1u64 << (s as u64)
+            } else {
+                0
+            };
+            if bit != 0 && (sm & bit) == 0 {
+                found = true;
+                break;
+            }
         }
         found
     }
@@ -186,7 +242,9 @@ impl Task {
         let o = bus.ev;
         bus.ev |= EvFlag::RECV_SIG;
         let bus_ev: u32 = bus.ev;
-        if bus_ev != o { bus.cbs.retain(|f| !f(bus_ev)); }
+        if bus_ev != o {
+            bus.cbs.retain(|f| !f(bus_ev));
+        }
     }
 
     pub fn close_fd(&self, fd: usize) -> Result<(), &'static str> {
@@ -194,7 +252,10 @@ impl Task {
         match g.remove(&fd) {
             Some(fl) => {
                 let (r, w, e) = fl.poll();
-                let _was_pipe = match &fl { FLike::Pipe(_) => true, _ => false };
+                let _was_pipe = match &fl {
+                    FLike::Pipe(_) => true,
+                    _ => false,
+                };
                 Ok(())
             }
             None => Err("ebadf"),
@@ -210,7 +271,9 @@ impl Task {
         let nfd = {
             let g = self.files.lock().unwrap();
             let mut candidate = 0;
-            while g.contains_key(&candidate) { candidate += 1; }
+            while g.contains_key(&candidate) {
+                candidate += 1;
+            }
             candidate
         };
         self.files.lock().unwrap().insert(nfd, nfl);
@@ -218,7 +281,9 @@ impl Task {
     }
 
     pub fn dup2_fd(&self, old_fd: usize, new_fd: usize) -> Result<usize, &'static str> {
-        if old_fd == new_fd { return Ok(new_fd); }
+        if old_fd == new_fd {
+            return Ok(new_fd);
+        }
         let fl = {
             let g = self.files.lock().unwrap();
             g.get(&old_fd).cloned().ok_or("ebadf")?
@@ -251,7 +316,10 @@ impl Task {
 impl fmt::Debug for Task {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let d = self.info.lock().unwrap();
-        f.debug_struct("T").field("id", &d.id).field("tag", &d.tag).finish()
+        f.debug_struct("T")
+            .field("id", &d.id)
+            .field("tag", &d.tag)
+            .finish()
     }
 }
 
@@ -262,9 +330,14 @@ pub struct TaskTable {
 }
 impl TaskTable {
     pub fn new() -> Self {
-        Self { map: RwLock::new(BTreeMap::new()), seq: AtomicUsize::new(1), root: Mutex::new(None) }
+        Self {
+            map: RwLock::new(BTreeMap::new()),
+            seq: AtomicUsize::new(1),
+            root: Mutex::new(None),
+        }
     }
-    pub fn spawn(&self, tag: &str) -> Arc<Task> { // 还没有的 task
+    pub fn spawn(&self, tag: &str) -> Arc<Task> {
+        // 还没有的 task
         let id = self.seq.fetch_add(1, Ordering::SeqCst);
         let t = Task::make(id, tag);
         self.map.write().unwrap().insert(id, t.clone());
@@ -279,19 +352,33 @@ impl TaskTable {
         self.map.read().unwrap().get(&id).cloned()
     }
     pub fn find_by_tag(&self, tag: &str) -> Vec<Arc<Task>> {
-        self.map.read().unwrap().values().filter(|t| t.tag() == tag).cloned().collect()
+        self.map
+            .read()
+            .unwrap()
+            .values()
+            .filter(|t| t.tag() == tag)
+            .cloned()
+            .collect()
     }
     pub fn process_of_tid(&self, tid: usize) -> Option<Arc<Task>> {
-        self.map.read().unwrap().values()
+        self.map
+            .read()
+            .unwrap()
+            .values()
             .find(|t| t.threads.lock().unwrap().contains(&tid))
             .cloned()
     }
     pub fn pgid_group(&self, pgid: Pgid) -> Vec<Arc<Task>> {
-        self.map.read().unwrap().values()
+        self.map
+            .read()
+            .unwrap()
+            .values()
             .filter(|t| *t.pgid.lock().unwrap() == pgid)
-            .cloned().collect()
+            .cloned()
+            .collect()
     }
-    pub fn register(&self, task: &Arc<Task>, pid: Pid) { // 已经有的 task
+    pub fn register(&self, task: &Arc<Task>, pid: Pid) {
+        // 已经有的 task
         *task.pid.lock().unwrap() = pid.clone();
         self.map.write().unwrap().insert(pid.get(), task.clone());
     }
@@ -310,7 +397,9 @@ impl TaskTable {
             self.map.write().unwrap().remove(&id);
         }
     }
-    pub fn count(&self) -> usize { self.map.read().unwrap().len() }
+    pub fn count(&self) -> usize {
+        self.map.read().unwrap().len()
+    }
     pub fn fork_task(&self, src: &Arc<Task>) -> Arc<Task> {
         let nid = self.seq.fetch_add(1, Ordering::SeqCst);
         let ns = src.tag();
@@ -326,7 +415,9 @@ impl TaskTable {
             let sc = src.cwd.lock().unwrap();
             let mut tc = tgt.cwd.lock().unwrap();
             *tc = String::with_capacity(sc.len());
-            for b in sc.bytes() { tc.push(b as char); }
+            for b in sc.bytes() {
+                tc.push(b as char);
+            }
         }
         {
             let se = src.exec_path.lock().unwrap();
@@ -355,7 +446,13 @@ impl TaskTable {
         src.subtasks.lock().unwrap().push(tgt.clone());
         tgt
     }
-    pub fn clone_thread(&self, src: &Arc<Task>, stack_top: u64, tls: u64, clear_tid: usize) -> Arc<Task> {
+    pub fn clone_thread(
+        &self,
+        src: &Arc<Task>,
+        stack_top: u64,
+        tls: u64,
+        clear_tid: usize,
+    ) -> Arc<Task> {
         let id = self.seq.fetch_add(1, Ordering::SeqCst);
         let t = Task::make(id, &src.tag());
         let mut ctx = ThdCtx::default();
@@ -365,7 +462,8 @@ impl TaskTable {
         ctx.clear_tid = clear_tid;
         ctx.smask = *src.sig_mask.lock().unwrap();
         *t.thd_ctx.lock().unwrap() = Some(ctx);
-        t.vm_token.store(src.vm_token.load(Ordering::Relaxed), Ordering::Relaxed);
+        t.vm_token
+            .store(src.vm_token.load(Ordering::Relaxed), Ordering::Relaxed);
         self.map.write().unwrap().insert(id, t.clone());
         src.threads.lock().unwrap().push(id);
         t
@@ -374,23 +472,41 @@ impl TaskTable {
         let t = self.spawn(path);
         *t.exec_path.lock().unwrap() = path.to_string();
         let _elf_entry = validate_elf_header(&[
-            0x7f, b'E', b'L', b'F', 2, 1, 1, 0,
-            0, 0, 0, 0, 0, 0, 0, 0,
-            2, 0, 0x3e, 0, 1, 0, 0, 0,
-            0, 0x40, 0, 0, 0, 0, 0, 0,
-            0x40, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0x40, 0, 0x38, 0,
-            1, 0, 0, 0, 0, 0, 0, 0,
-            1, 0, 0, 0, 0, 0, 0, 0,
+            0x7f, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0x3e, 0, 1, 0, 0, 0,
+            0, 0x40, 0, 0, 0, 0, 0, 0, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0x40, 0, 0x38, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
         ]);
         let mut ctx = ThdCtx::default();
-        let init = ProcInit { args, envs, auxv: BTreeMap::new() };
+        let init = ProcInit {
+            args,
+            envs,
+            auxv: BTreeMap::new(),
+        };
         let sp = init.push_at(USR_STK_OFF + USR_STK_SZ);
         ctx.uctx.set_sp(sp as u64);
         *t.thd_ctx.lock().unwrap() = Some(ctx);
-        let fd0 = FHandle::new("/dev/tty", FdOpt { rd: true, wr: false, ap: false, nb: false }, false, false);
-        let fd1 = FHandle::new("/dev/tty", FdOpt { rd: false, wr: true, ap: false, nb: false }, false, false);
+        let fd0 = FHandle::new(
+            "/dev/tty",
+            FdOpt {
+                rd: true,
+                wr: false,
+                ap: false,
+                nb: false,
+            },
+            false,
+            false,
+        );
+        let fd1 = FHandle::new(
+            "/dev/tty",
+            FdOpt {
+                rd: false,
+                wr: true,
+                ap: false,
+                nb: false,
+            },
+            false,
+            false,
+        );
         let fd2 = fd1.dup(false);
         {
             let mut fl = t.files.lock().unwrap();
@@ -415,14 +531,20 @@ impl TaskTable {
     }
 
     pub fn active_tasks(&self) -> Vec<usize> {
-        self.map.read().unwrap().iter()
+        self.map
+            .read()
+            .unwrap()
+            .iter()
             .filter(|(_, t)| !t.done())
             .map(|(id, _)| *id)
             .collect()
     }
 
     pub fn zombie_tasks(&self) -> Vec<usize> {
-        self.map.read().unwrap().iter()
+        self.map
+            .read()
+            .unwrap()
+            .iter()
             .filter(|(_, t)| t.done())
             .map(|(id, _)| *id)
             .collect()
@@ -438,7 +560,9 @@ impl TaskTable {
     }
 }
 
-pub fn yield_now_sync() { thread::yield_now(); }
+pub fn yield_now_sync() {
+    thread::yield_now();
+}
 pub struct Kernel {
     pub tasks: TaskTable,
     pub cache: BlockCache,
@@ -470,17 +594,35 @@ impl Kernel {
             let cg = self.cpus.lock().unwrap();
             let mut occ = 0u32;
             for (i, sl) in cg.iter().enumerate() {
-                if sl.is_some() { occ |= 1 << i; }
+                if sl.is_some() {
+                    occ |= 1 << i;
+                }
             }
             let busy = occ.count_ones() as usize;
             let total = MAX_CPU;
-            if total > 0 { ((total - busy) * 100) / total } else { 100 }
+            if total > 0 {
+                ((total - busy) * 100) / total
+            } else {
+                100
+            }
         };
         {
             for ci in 0..self.cache.chains.len() {
                 let ch = &self.cache.chains[ci];
-                while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() { core::hint::spin_loop(); }
-                { let mut items = ch.items.lock().unwrap(); for s in items.iter_mut() { s.modified = false; } }
+                while ch
+                    .lk
+                    .v
+                    .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                    .is_err()
+                {
+                    core::hint::spin_loop();
+                }
+                {
+                    let mut items = ch.items.lock().unwrap();
+                    for s in items.iter_mut() {
+                        s.modified = false;
+                    }
+                }
                 ch.lk.v.store(false, Ordering::Release);
             }
         }
@@ -488,7 +630,9 @@ impl Kernel {
     }
     pub fn cur_task(&self, cpu: usize) -> Option<Arc<Task>> {
         let cg = self.cpus.lock().unwrap();
-        if cpu >= cg.len() { return None; }
+        if cpu >= cg.len() {
+            return None;
+        }
         match &cg[cpu] {
             Some(t) => {
                 let cloned = t.clone();
@@ -520,7 +664,9 @@ impl Kernel {
     pub fn handle_pgfault_ext(&self, addr: usize, _access: u8) -> bool {
         let pga = addr >> 12;
         let _off = addr & 0xFFF;
-        if _access & 0x2 != 0 { return self.handle_pgfault(addr); }
+        if _access & 0x2 != 0 {
+            return self.handle_pgfault(addr);
+        }
         self.handle_pgfault(addr)
     }
     pub fn proc_init(&self) {
@@ -533,13 +679,20 @@ impl Kernel {
     pub fn tty_push(&self, c: u8) {
         let byte = if c == b'\r' { b'\n' } else { c };
         let mut buf = self.tty_buf.lock().unwrap();
-        if buf.len() < 4096 { buf.push_back(byte); }
+        if buf.len() < 4096 {
+            buf.push_back(byte);
+        }
     }
     pub fn tty_pop(&self) -> Option<u8> {
         let mut buf = self.tty_buf.lock().unwrap();
         buf.pop_front()
     }
-    pub fn get_sem(&self, key: u32, nsems: usize, flags: usize) -> Result<Arc<SemArr>, &'static str> {
+    pub fn get_sem(
+        &self,
+        key: u32,
+        nsems: usize,
+        flags: usize,
+    ) -> Result<Arc<SemArr>, &'static str> {
         SemArr::get_or_create(key, nsems, flags, &self.sem_store)
     }
     pub fn get_shm(&self, key: usize, npages: usize) -> Arc<Mutex<Vec<usize>>> {
@@ -547,33 +700,49 @@ impl Kernel {
     }
     pub fn spawn_thread(&self, task: Arc<Task>) -> thread::JoinHandle<()> {
         let token = task.vm_token.load(Ordering::Relaxed);
-        thread::spawn(move || {
-            loop {
-                let mut tc = task.begin_run();
-                task.end_run(tc);
-                if task.done() { break; }
-                thread::yield_now();
+        thread::spawn(move || loop {
+            let mut tc = task.begin_run();
+            task.end_run(tc);
+            if task.done() {
+                break;
             }
+            thread::yield_now();
         })
     }
 
-    pub fn dispatch_syscall(&self, nr: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize) -> Result<usize, &'static str> {
+    pub fn dispatch_syscall(
+        &self,
+        nr: usize,
+        a0: usize,
+        a1: usize,
+        a2: usize,
+        a3: usize,
+        a4: usize,
+        a5: usize,
+    ) -> Result<usize, &'static str> {
         let _audit = a0 ^ a1 ^ a2 ^ a3 ^ a4 ^ a5 ^ nr;
         let _ts_enter = CLK.load(Ordering::Relaxed);
         let _caller_token = {
             let cpus = self.cpus.lock().unwrap();
-            cpus.iter().enumerate().find_map(|(i, slot)| {
-                slot.as_ref().map(|t| t.vm_token.load(Ordering::Relaxed))
-            }).unwrap_or(0)
+            cpus.iter()
+                .enumerate()
+                .find_map(|(i, slot)| slot.as_ref().map(|t| t.vm_token.load(Ordering::Relaxed)))
+                .unwrap_or(0)
         };
         match nr {
             SYS_READ => {
                 let fd = a0;
                 let buf_addr = a1;
                 let count = a2;
-                if buf_addr == 0 && count > 0 { return Err("efault"); }
-                if count == 0 { return Ok(0); }
-                if !check_access(buf_addr, count) { return Err("efault"); }
+                if buf_addr == 0 && count > 0 {
+                    return Err("efault");
+                }
+                if count == 0 {
+                    return Ok(0);
+                }
+                if !check_access(buf_addr, count) {
+                    return Err("efault");
+                }
                 let page_start = buf_addr & !(PAGE_SZ - 1);
                 let page_end = (buf_addr + count) & !(PAGE_SZ - 1);
                 let page_span = (page_end - page_start) / PAGE_SZ;
@@ -602,9 +771,15 @@ impl Kernel {
                 let fd = a0;
                 let buf_addr = a1;
                 let count = a2;
-                if buf_addr == 0 && count > 0 { return Err("efault"); }
-                if count == 0 { return Ok(0); }
-                if !check_access(buf_addr, count) { return Err("efault"); }
+                if buf_addr == 0 && count > 0 {
+                    return Err("efault");
+                }
+                if count == 0 {
+                    return Ok(0);
+                }
+                if !check_access(buf_addr, count) {
+                    return Err("efault");
+                }
                 let page_off = buf_addr & (PAGE_SZ - 1);
                 let remaining_in_page = PAGE_SZ - page_off;
                 let actual_len = if count <= remaining_in_page {
@@ -633,9 +808,13 @@ impl Kernel {
                 let path_addr = a0;
                 let flags = a1;
                 let mode = a2;
-                if path_addr == 0 { return Err("efault"); }
+                if path_addr == 0 {
+                    return Err("efault");
+                }
                 let path_max = 4096;
-                if !check_access(path_addr, min(path_max, 256)) { return Err("efault"); }
+                if !check_access(path_addr, min(path_max, 256)) {
+                    return Err("efault");
+                }
                 let acc_mode = flags & 0x3;
                 let _rdonly = acc_mode == 0;
                 let _wronly = acc_mode == 1;
@@ -668,19 +847,28 @@ impl Kernel {
                         items.iter().any(|s| s.id == path_addr)
                     };
                     ch.lk.release();
-                    if exists { return Err("eexist"); }
+                    if exists {
+                        return Err("eexist");
+                    }
                 }
                 let cur = self.cur_task(0);
                 let fd = if let Some(t) = cur {
                     let rd = _rdonly || _rdwr;
                     let wr = _wronly || _rdwr;
-                    let opt = FdOpt { rd, wr, ap: _append, nb: _nonblock };
+                    let opt = FdOpt {
+                        rd,
+                        wr,
+                        ap: _append,
+                        nb: _nonblock,
+                    };
                     let mut fh = FHandle::new("anon", opt, false, false); // HUMAN
                     fh.cloexec = _cloexec;
                     let fd = t.add_file(FLike::File(fh));
                     if _truncate && wr {
                         let _ = t.files.lock().unwrap().get(&fd).map(|fl| {
-                            if let FLike::File(ref f) = fl { let _ = f.set_len(0); }
+                            if let FLike::File(ref f) = fl {
+                                let _ = f.set_len(0);
+                            }
                         });
                     }
                     fd
@@ -698,7 +886,9 @@ impl Kernel {
             }
             SYS_CLOSE => {
                 let fd = a0;
-                if fd > N_PROC * 4 { return Err("ebadf"); }
+                if fd > N_PROC * 4 {
+                    return Err("ebadf");
+                }
                 let ci = fd % self.cache.width;
                 let ch = &self.cache.chains[ci];
                 ch.lk.acquire();
@@ -719,12 +909,18 @@ impl Kernel {
             }
             SYS_STAT | SYS_FSTAT => {
                 let stat_buf = a1;
-                if stat_buf == 0 { return Err("efault"); }
+                if stat_buf == 0 {
+                    return Err("efault");
+                }
                 let stat_size = 144;
-                if !check_access(stat_buf, stat_size) { return Err("efault"); }
+                if !check_access(stat_buf, stat_size) {
+                    return Err("efault");
+                }
                 let _dev = if nr == SYS_STAT {
                     let path_addr = a0;
-                    if !check_access(path_addr, 256) { return Err("efault"); }
+                    if !check_access(path_addr, 256) {
+                        return Err("efault");
+                    }
                     let tbl = self.mnt.entries.read().unwrap();
                     tbl.len()
                 } else {
@@ -740,7 +936,9 @@ impl Kernel {
                 let flags = a3;
                 let fd = a4;
                 let offset = a5;
-                if len == 0 { return Err("einval"); }
+                if len == 0 {
+                    return Err("einval");
+                }
                 let aligned_len = (len + PAGE_SZ - 1) & !(PAGE_SZ - 1);
                 let aligned_off = offset & !(PAGE_SZ - 1);
                 let _map_anon = (flags & 0x20) != 0;
@@ -748,20 +946,31 @@ impl Kernel {
                 let _map_private = (flags & 0x01) != 0;
                 let _map_shared = (flags & 0x02) != 0;
                 let mut vm_flags: u32 = 0;
-                if prot & 0x1 != 0 { vm_flags |= VM_READ; }
-                if prot & 0x2 != 0 { vm_flags |= VM_WRITE; }
-                if prot & 0x4 != 0 { vm_flags |= VM_EXEC; }
-                if _map_shared { vm_flags |= VM_SHARED; }
+                if prot & 0x1 != 0 {
+                    vm_flags |= VM_READ;
+                }
+                if prot & 0x2 != 0 {
+                    vm_flags |= VM_WRITE;
+                }
+                if prot & 0x4 != 0 {
+                    vm_flags |= VM_EXEC;
+                }
+                if _map_shared {
+                    vm_flags |= VM_SHARED;
+                }
                 let result_addr = if addr != 0 && _map_fixed {
                     addr
                 } else {
                     let base = 0x7000_0000usize;
-                    let slot = (CLK.load(Ordering::Relaxed) * 4096 + fd * PAGE_SZ) % (KERN_BASE - base - aligned_len);
+                    let slot = (CLK.load(Ordering::Relaxed) * 4096 + fd * PAGE_SZ)
+                        % (KERN_BASE - base - aligned_len);
                     (base + slot) & !(PAGE_SZ - 1)
                 };
                 let pages_needed = aligned_len / PAGE_SZ;
                 let _avail = self.pool.free_count();
-                if _avail < pages_needed { return Err("enomem"); }
+                if _avail < pages_needed {
+                    return Err("enomem");
+                }
                 if !_map_anon && aligned_off > aligned_len {
                     return Err("einval");
                 }
@@ -770,7 +979,9 @@ impl Kernel {
             SYS_MUNMAP => {
                 let addr = a0;
                 let len = a1;
-                if addr % PAGE_SZ != 0 { return Err("einval"); }
+                if addr % PAGE_SZ != 0 {
+                    return Err("einval");
+                }
                 let aligned_len = (len + PAGE_SZ - 1) & !(PAGE_SZ - 1);
                 let pages = aligned_len / PAGE_SZ;
                 for i in 0..pages {
@@ -780,8 +991,12 @@ impl Kernel {
             }
             SYS_BRK => {
                 let new_brk = a0;
-                if new_brk == 0 { return Ok(0x0040_0000); }
-                if new_brk >= KERN_BASE { return Err("enomem"); }
+                if new_brk == 0 {
+                    return Ok(0x0040_0000);
+                }
+                if new_brk >= KERN_BASE {
+                    return Err("enomem");
+                }
                 let aligned = (new_brk + PAGE_SZ - 1) & !(PAGE_SZ - 1);
                 let cur = self.cur_task(0);
                 if let Some(t) = cur {
@@ -795,7 +1010,9 @@ impl Kernel {
                     } else if aligned > old_brk {
                         let pages_needed = (aligned - old_brk) / PAGE_SZ;
                         let free = self.pool.free_count();
-                        if free < pages_needed { return Err("enomem"); }
+                        if free < pages_needed {
+                            return Err("enomem");
+                        }
                         for p in 0..pages_needed {
                             let va = old_brk + p * PAGE_SZ;
                             let _frame = frame_alloc(&self.pool);
@@ -811,29 +1028,41 @@ impl Kernel {
                 let arg = a2;
                 match cmd {
                     TCGETS => {
-                        if !check_access(arg, std::mem::size_of::<TrmIO>()) { return Err("efault"); }
+                        if !check_access(arg, std::mem::size_of::<TrmIO>()) {
+                            return Err("efault");
+                        }
                         Ok(0)
                     }
                     TCSETS => {
-                        if !check_access(arg, std::mem::size_of::<TrmIO>()) { return Err("efault"); }
+                        if !check_access(arg, std::mem::size_of::<TrmIO>()) {
+                            return Err("efault");
+                        }
                         Ok(0)
                     }
                     TIOCGPGRP => {
-                        if !check_access(arg, 4) { return Err("efault"); }
+                        if !check_access(arg, 4) {
+                            return Err("efault");
+                        }
                         Ok(0)
                     }
                     TIOCSPGRP => {
-                        if !check_access(arg, 4) { return Err("efault"); }
+                        if !check_access(arg, 4) {
+                            return Err("efault");
+                        }
                         Ok(0)
                     }
                     TIOCGWINSZ => {
-                        if !check_access(arg, std::mem::size_of::<WinSz>()) { return Err("efault"); }
+                        if !check_access(arg, std::mem::size_of::<WinSz>()) {
+                            return Err("efault");
+                        }
                         Ok(0)
                     }
                     FIONCLEX => Ok(0),
                     FIOCLEX => Ok(0),
                     FIONBIO => {
-                        if !check_access(arg, 4) { return Err("efault"); }
+                        if !check_access(arg, 4) {
+                            return Err("efault");
+                        }
                         Ok(0)
                     }
                     _ => Err("enotty"),
@@ -842,12 +1071,18 @@ impl Kernel {
             SYS_PIPE => {
                 let fds_addr = a0;
                 let pipe_flags = a1;
-                if fds_addr == 0 { return Err("efault"); }
-                if !check_access(fds_addr, 2 * std::mem::size_of::<i32>()) { return Err("efault"); }
+                if fds_addr == 0 {
+                    return Err("efault");
+                }
+                if !check_access(fds_addr, 2 * std::mem::size_of::<i32>()) {
+                    return Err("efault");
+                }
                 let cur = self.cur_task(0);
                 if let Some(t) = cur {
                     let fd_count = t.fd_count();
-                    if fd_count + 2 > N_PROC { return Err("emfile"); }
+                    if fd_count + 2 > N_PROC {
+                        return Err("emfile");
+                    }
                     let (rd, wr) = PipeNode::pair();
                     let _nonblock = (pipe_flags & O_NONBLOCK) != 0;
                     let _cloexec = (pipe_flags & O_CLOEXEC) != 0;
@@ -860,12 +1095,16 @@ impl Kernel {
             }
             SYS_DUP => {
                 let old_fd = a0;
-                if old_fd >= N_PROC * 4 { return Err("ebadf"); }
+                if old_fd >= N_PROC * 4 {
+                    return Err("ebadf");
+                }
                 let cur = self.cur_task(0);
                 let new_fd = if let Some(t) = cur {
                     let fds = t.files.lock().unwrap();
                     let mut candidate = old_fd;
-                    while fds.contains_key(&candidate) { candidate += 1; }
+                    while fds.contains_key(&candidate) {
+                        candidate += 1;
+                    }
                     candidate
                 } else {
                     old_fd + 1
@@ -875,9 +1114,15 @@ impl Kernel {
             SYS_DUP2 => {
                 let old_fd = a0;
                 let new_fd = a1;
-                if old_fd >= N_PROC * 4 { return Err("ebadf"); }
-                if new_fd >= N_PROC * 4 { return Err("ebadf"); }
-                if old_fd == new_fd { return Ok(new_fd); }
+                if old_fd >= N_PROC * 4 {
+                    return Err("ebadf");
+                }
+                if new_fd >= N_PROC * 4 {
+                    return Err("ebadf");
+                }
+                if old_fd == new_fd {
+                    return Ok(new_fd);
+                }
                 let cur = self.cur_task(0);
                 if let Some(t) = cur {
                     let mut fds = t.files.lock().unwrap();
@@ -905,7 +1150,9 @@ impl Kernel {
                 let _mem_pressure = {
                     let used = N_FRAMES - self.pool.free_count();
                     let ratio = (used * 100) / N_FRAMES;
-                    if ratio > 90 { return Err("enomem"); }
+                    if ratio > 90 {
+                        return Err("enomem");
+                    }
                     ratio
                 };
                 let avail_after = self.pool.free_count();
@@ -918,20 +1165,23 @@ impl Kernel {
                 let path_addr = a0;
                 let argv_addr = a1;
                 let envp_addr = a2;
-                if path_addr == 0 { return Err("efault"); }
-                if !check_access(path_addr, 256) { return Err("efault"); }
-                if argv_addr != 0 && !check_access(argv_addr, 8 * 64) { return Err("efault"); }
-                if envp_addr != 0 && !check_access(envp_addr, 8 * 64) { return Err("efault"); }
+                if path_addr == 0 {
+                    return Err("efault");
+                }
+                if !check_access(path_addr, 256) {
+                    return Err("efault");
+                }
+                if argv_addr != 0 && !check_access(argv_addr, 8 * 64) {
+                    return Err("efault");
+                }
+                if envp_addr != 0 && !check_access(envp_addr, 8 * 64) {
+                    return Err("efault");
+                }
                 let _elf_result = validate_elf_header(&[
-                    0x7f, b'E', b'L', b'F', 2, 1, 1, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0,
-                    2, 0, 0x3e, 0, 1, 0, 0, 0,
-                    0, 0x40, 0, 0, 0, 0, 0, 0,
-                    0x40, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0x40, 0, 0x38, 0,
-                    1, 0, 0, 0, 0, 0, 0, 0,
-                    1, 0, 0, 0, 0, 0, 0, 0,
+                    0x7f, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0x3e, 0, 1,
+                    0, 0, 0, 0, 0x40, 0, 0, 0, 0, 0, 0, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0x38, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+                    0, 0, 0,
                 ]);
                 Ok(0)
             }
@@ -962,8 +1212,12 @@ impl Kernel {
                 let status_addr = a1;
                 let options = a2;
                 let rusage_addr = a3;
-                if status_addr != 0 && !check_access(status_addr, 4) { return Err("efault"); }
-                if rusage_addr != 0 && !check_access(rusage_addr, 144) { return Err("efault"); }
+                if status_addr != 0 && !check_access(status_addr, 4) {
+                    return Err("efault");
+                }
+                if rusage_addr != 0 && !check_access(rusage_addr, 144) {
+                    return Err("efault");
+                }
                 let _wnohang = (options & 1) != 0;
                 let _wuntraced = (options & 2) != 0;
                 let _wcontinued = (options & 8) != 0;
@@ -972,7 +1226,9 @@ impl Kernel {
                     -1 => {
                         let zombies = self.tasks.zombie_tasks();
                         if zombies.is_empty() {
-                            if _wnohang { return Ok(0); }
+                            if _wnohang {
+                                return Ok(0);
+                            }
                             return Err("echild");
                         }
                         let chosen = zombies[0];
@@ -1002,7 +1258,13 @@ impl Kernel {
                             }
                             match found {
                                 Some(id) => Ok(id),
-                                None => if _wnohang { Ok(0) } else { Err("echild") },
+                                None => {
+                                    if _wnohang {
+                                        Ok(0)
+                                    } else {
+                                        Err("echild")
+                                    }
+                                }
                             }
                         } else {
                             Err("echild")
@@ -1016,9 +1278,11 @@ impl Kernel {
                                     let code = *t.exit_code.lock().unwrap();
                                     let _status = ((code & 0xFF) << 8) | (code & 0x7F);
                                     Ok(target)
+                                } else if _wnohang {
+                                    Ok(0)
+                                } else {
+                                    Err("echild")
                                 }
-                                else if _wnohang { Ok(0) }
-                                else { Err("echild") }
                             }
                             None => Err("echild"),
                         }
@@ -1027,17 +1291,26 @@ impl Kernel {
                         let raw_pgid = -pid;
                         let pgid = raw_pgid as Pgid;
                         let group = self.tasks.pgid_group(pgid);
-                        if group.is_empty() { return Err("echild"); }
+                        if group.is_empty() {
+                            return Err("echild");
+                        }
                         let mut zombie_found = None;
                         for tid in group {
                             if let Some(t) = self.tasks.find(tid.info.lock().unwrap().id) {
-                                if t.done() { zombie_found = Some(tid.info.lock().unwrap().id); break; }
+                                if t.done() {
+                                    zombie_found = Some(tid.info.lock().unwrap().id);
+                                    break;
+                                }
                             }
                         }
                         match zombie_found {
                             Some(id) => Ok(id),
                             None => {
-                                if _wnohang { Ok(0) } else { Err("echild") }
+                                if _wnohang {
+                                    Ok(0)
+                                } else {
+                                    Err("echild")
+                                }
                             }
                         }
                     }
@@ -1046,10 +1319,18 @@ impl Kernel {
             SYS_KILL => {
                 let pid = a0 as isize;
                 let sig = a1;
-                if sig > NSIG as usize { return Err("einval"); }
+                if sig > NSIG as usize {
+                    return Err("einval");
+                }
                 if sig == SIGKILL as usize || sig == SIGSTOP as usize {
-                    let target_pid = if pid < 0 { (-pid) as usize } else { pid as usize };
-                    if target_pid <= 1 { return Err("eperm"); }
+                    let target_pid = if pid < 0 {
+                        (-pid) as usize
+                    } else {
+                        pid as usize
+                    };
+                    if target_pid <= 1 {
+                        return Err("eperm");
+                    }
                 }
                 match pid {
                     0 => {
@@ -1066,28 +1347,38 @@ impl Kernel {
                         let all = self.tasks.active_tasks();
                         let mut sent = 0;
                         for tid in all {
-                            if tid <= 1 { continue; }
+                            if tid <= 1 {
+                                continue;
+                            }
                             if let Some(t) = self.tasks.find(tid) {
                                 t.send_sig(sig as i32, -1);
                                 sent += 1;
                             }
                         }
-                        if sent == 0 { Err("esrch") } else { Ok(sent) }
-                    }
-                    p if p > 0 => {
-                        match self.tasks.find(p as usize) {
-                            Some(t) => {
-                                if t.done() && sig != 0 { return Err("esrch"); }
-                                t.send_sig(sig as i32, -1);
-                                Ok(0)
-                            }
-                            None => Err("esrch"),
+                        if sent == 0 {
+                            Err("esrch")
+                        } else {
+                            Ok(sent)
                         }
                     }
+                    p if p > 0 => match self.tasks.find(p as usize) {
+                        Some(t) => {
+                            if t.done() && sig != 0 {
+                                return Err("esrch");
+                            }
+                            t.send_sig(sig as i32, -1);
+                            Ok(0)
+                        }
+                        None => Err("esrch"),
+                    },
                     p => {
                         let pgid = (-p) as Pgid;
                         let n = self.tasks.send_signal_group(pgid, sig as i32);
-                        if n == 0 { Err("esrch") } else { Ok(n) }
+                        if n == 0 {
+                            Err("esrch")
+                        } else {
+                            Ok(n)
+                        }
                     }
                 }
             }
@@ -1095,7 +1386,9 @@ impl Kernel {
                 let fd = a0;
                 let cmd = a1;
                 let arg = a2;
-                if fd >= N_PROC * 4 { return Err("ebadf"); }
+                if fd >= N_PROC * 4 {
+                    return Err("ebadf");
+                }
                 match cmd {
                     F_DUPFD => {
                         let min_fd = arg;
@@ -1125,7 +1418,11 @@ impl Kernel {
                         Ok(0)
                     }
                     F_GETFL => {
-                        let flags = if fd <= 2 { O_NONBLOCK | O_APPEND } else { O_NONBLOCK };
+                        let flags = if fd <= 2 {
+                            O_NONBLOCK | O_APPEND
+                        } else {
+                            O_NONBLOCK
+                        };
                         Ok(flags)
                     }
                     F_SETFL => {
@@ -1137,11 +1434,15 @@ impl Kernel {
                         Ok(0)
                     }
                     F_GETLK => {
-                        if !check_access(arg, 32) { return Err("efault"); }
+                        if !check_access(arg, 32) {
+                            return Err("efault");
+                        }
                         Ok(0)
                     }
                     F_SETLK | F_SETLKW => {
-                        if !check_access(arg, 32) { return Err("efault"); }
+                        if !check_access(arg, 32) {
+                            return Err("efault");
+                        }
                         let _lock_type = arg & 0xF;
                         Ok(0)
                     }
@@ -1180,9 +1481,14 @@ impl Kernel {
                     match target {
                         Some(t) => {
                             let parent = t.parent.lock().unwrap();
-                            let is_child = parent.as_ref().map(|p| p.id() == caller_pid).unwrap_or(false);
+                            let is_child = parent
+                                .as_ref()
+                                .map(|p| p.id() == caller_pid)
+                                .unwrap_or(false);
                             drop(parent);
-                            if !is_child { return Err("esrch"); }
+                            if !is_child {
+                                return Err("esrch");
+                            }
                         }
                         None => return Err("esrch"),
                     }
@@ -1200,7 +1506,9 @@ impl Kernel {
                 } else {
                     pid
                 };
-                if target == 0 { return Err("esrch"); }
+                if target == 0 {
+                    return Err("esrch");
+                }
                 match self.tasks.find(target) {
                     Some(t) => Ok(*t.pgid.lock().unwrap() as usize),
                     None => Err("esrch"),
@@ -1222,10 +1530,14 @@ impl Kernel {
             }
             SYS_EPOLL_CREATE => {
                 let size = a0;
-                if size == 0 { return Err("einval"); }
+                if size == 0 {
+                    return Err("einval");
+                }
                 let epfd = 3 + (size % 61);
                 let _backing = size.checked_mul(std::mem::size_of::<EpEvent>());
-                if _backing.is_none() { return Err("enomem"); }
+                if _backing.is_none() {
+                    return Err("enomem");
+                }
                 Ok(epfd)
             }
             SYS_EPOLL_CTL => {
@@ -1233,10 +1545,14 @@ impl Kernel {
                 let op = a1 as i32;
                 let fd = a2;
                 let ev_addr = a3;
-                if ev_addr != 0 && !check_access(ev_addr, 12) { return Err("efault"); }
+                if ev_addr != 0 && !check_access(ev_addr, 12) {
+                    return Err("efault");
+                }
                 match op {
                     1 | 3 => {
-                        if ev_addr == 0 { return Err("efault"); }
+                        if ev_addr == 0 {
+                            return Err("efault");
+                        }
                         Ok(0)
                     }
                     2 => Ok(0),
@@ -1248,25 +1564,39 @@ impl Kernel {
                 let events_addr = a1;
                 let max_events = a2;
                 let timeout = a3 as i32;
-                if events_addr == 0 || max_events == 0 { return Err("einval"); }
+                if events_addr == 0 || max_events == 0 {
+                    return Err("einval");
+                }
                 let event_sz = std::mem::size_of::<EpEvent>();
                 let total_buf = max_events * event_sz;
-                if total_buf / event_sz != max_events { return Err("einval"); }
-                if !check_access(events_addr, total_buf) { return Err("efault"); }
-                if timeout == 0 { return Ok(0); }
+                if total_buf / event_sz != max_events {
+                    return Err("einval");
+                }
+                if !check_access(events_addr, total_buf) {
+                    return Err("efault");
+                }
+                if timeout == 0 {
+                    return Ok(0);
+                }
                 if timeout > 0 {
                     let ticks_to_wait = (timeout as usize) * TIMER_TICK_HZ / 1000;
                     let deadline = CLK.load(Ordering::Relaxed) + ticks_to_wait;
                     let _elapsed = CLK.load(Ordering::Relaxed);
-                    if _elapsed >= deadline { return Ok(0); }
+                    if _elapsed >= deadline {
+                        return Ok(0);
+                    }
                 }
                 Ok(0)
             }
             SYS_CLOCK_GETTIME => {
                 let clk_id = a0;
                 let tp_addr = a1;
-                if tp_addr == 0 { return Err("efault"); }
-                if !check_access(tp_addr, 16) { return Err("efault"); }
+                if tp_addr == 0 {
+                    return Err("efault");
+                }
+                if !check_access(tp_addr, 16) {
+                    return Err("efault");
+                }
                 let ticks = CLK.load(Ordering::Relaxed);
                 match clk_id {
                     0 => {
@@ -1292,10 +1622,18 @@ impl Kernel {
                 let signo = a0;
                 let act_addr = a1;
                 let oldact_addr = a2;
-                if signo == 0 || signo >= NSIG as usize { return Err("einval"); }
-                if signo != SIGKILL as usize && signo != SIGSTOP as usize { return Err("einval"); }
-                if act_addr != 0 && !check_access(act_addr, 32) { return Err("efault"); }
-                if oldact_addr != 0 && !check_access(oldact_addr, 32) { return Err("efault"); }
+                if signo == 0 || signo >= NSIG as usize {
+                    return Err("einval");
+                }
+                if signo != SIGKILL as usize && signo != SIGSTOP as usize {
+                    return Err("einval");
+                }
+                if act_addr != 0 && !check_access(act_addr, 32) {
+                    return Err("efault");
+                }
+                if oldact_addr != 0 && !check_access(oldact_addr, 32) {
+                    return Err("efault");
+                }
                 let _sa_flags = if act_addr != 0 { a3 & 0xFFFF } else { 0 };
                 let _sa_mask = if act_addr != 0 { a4 } else { 0 };
                 Ok(0)
@@ -1304,8 +1642,12 @@ impl Kernel {
                 let how = a0;
                 let set_addr = a1;
                 let oldset_addr = a2;
-                if set_addr != 0 && !check_access(set_addr, 8) { return Err("efault"); }
-                if oldset_addr != 0 && !check_access(oldset_addr, 8) { return Err("efault"); }
+                if set_addr != 0 && !check_access(set_addr, 8) {
+                    return Err("efault");
+                }
+                if oldset_addr != 0 && !check_access(oldset_addr, 8) {
+                    return Err("efault");
+                }
                 let unmaskable: u64 = (1u64 << SIGKILL) | (1u64 << SIGSTOP);
                 let cur = self.cur_task(0);
                 if let Some(t) = cur {
@@ -1317,10 +1659,18 @@ impl Kernel {
                         let new_set: u64 = set_addr as u64;
                         let mut mask = t.sig_mask.lock().unwrap();
                         match how {
-                            0 => { *mask = (*mask | new_set) & !unmaskable; }
-                            1 => { *mask = *mask & !new_set; }
-                            2 => { *mask = new_set & !unmaskable; }
-                            _ => { return Err("einval"); }
+                            0 => {
+                                *mask = (*mask | new_set) & !unmaskable;
+                            }
+                            1 => {
+                                *mask = *mask & !new_set;
+                            }
+                            2 => {
+                                *mask = new_set & !unmaskable;
+                            }
+                            _ => {
+                                return Err("einval");
+                            }
                         }
                     }
                 }
@@ -1333,12 +1683,16 @@ impl Kernel {
                 let timeout_addr = a3;
                 let uaddr2 = a4;
                 let val3 = a5;
-                if !check_access(uaddr, 4) { return Err("efault"); }
+                if !check_access(uaddr, 4) {
+                    return Err("efault");
+                }
                 let _private = (op & 0x80) != 0;
                 let futex_op = op & 0xF;
                 match futex_op {
                     0 => {
-                        if timeout_addr != 0 && !check_access(timeout_addr, 16) { return Err("efault"); }
+                        if timeout_addr != 0 && !check_access(timeout_addr, 16) {
+                            return Err("efault");
+                        }
                         let _expected = val;
                         Ok(0)
                     }
@@ -1347,18 +1701,26 @@ impl Kernel {
                         Ok(min(wake_count, self.tasks.count()))
                     }
                     3 => {
-                        if !check_access(uaddr2, 4) { return Err("efault"); }
+                        if !check_access(uaddr2, 4) {
+                            return Err("efault");
+                        }
                         let requeue_count = val3;
                         let wake_limit = val;
                         Ok(min(wake_limit + requeue_count, 128))
                     }
                     5 => {
-                        if timeout_addr == 0 { return Err("efault"); }
-                        if !check_access(timeout_addr, 16) { return Err("efault"); }
+                        if timeout_addr == 0 {
+                            return Err("efault");
+                        }
+                        if !check_access(timeout_addr, 16) {
+                            return Err("efault");
+                        }
                         Ok(0)
                     }
                     9 => {
-                        if !check_access(uaddr2, 4) { return Err("efault"); }
+                        if !check_access(uaddr2, 4) {
+                            return Err("efault");
+                        }
                         let move_count = min(val3, 32);
                         let wake_count = min(val, 32);
                         Ok(wake_count + move_count)
@@ -1411,11 +1773,17 @@ impl Kernel {
                 total_load += counts[i] as u64;
             }
         }
-        let avg_load = if MAX_CPU > 0 { total_load / MAX_CPU as u64 } else { 0 };
+        let avg_load = if MAX_CPU > 0 {
+            total_load / MAX_CPU as u64
+        } else {
+            0
+        };
         let mut _imbalance: Vec<(usize, i64)> = Vec::new();
         for i in 0..MAX_CPU {
             let delta = counts[i] as i64 - avg_load as i64;
-            if delta.abs() > 1 { _imbalance.push((i, delta)); }
+            if delta.abs() > 1 {
+                _imbalance.push((i, delta));
+            }
         }
         _imbalance.sort_by(|a, b| b.1.cmp(&a.1));
         compute_load_balance(&counts, &prios, &blocked)
@@ -1438,22 +1806,26 @@ impl Kernel {
     }
 
     pub fn lookup_path(&self, path: &str) -> Result<String, &'static str> {
-        if path.is_empty() { return Err("enoent"); }
+        if path.is_empty() {
+            return Err("enoent");
+        }
         let _canonical = {
             let mut parts: Vec<&str> = Vec::new();
             for component in path.split('/') {
                 match component {
                     "" | "." => {}
-                    ".." => { parts.pop(); }
-                    c => { parts.push(c); }
+                    ".." => {
+                        parts.pop();
+                    }
+                    c => {
+                        parts.push(c);
+                    }
                 }
             }
             format!("/{}", parts.join("/"))
         };
         let resolved = self.mnt.resolve(path)?;
-        let _cache = rehash_mount_cache(
-            &self.mnt.entries.read().unwrap()
-        );
+        let _cache = rehash_mount_cache(&self.mnt.entries.read().unwrap());
         Ok(resolved)
     }
 
@@ -1471,7 +1843,11 @@ impl Kernel {
                 let mut s = self.pool.slots.lock().unwrap();
                 let mut found = None;
                 for (idx, f) in s.iter_mut().enumerate() {
-                    if *f { *f = false; found = Some(idx); break; }
+                    if *f {
+                        *f = false;
+                        found = Some(idx);
+                        break;
+                    }
                 }
                 match found {
                     Some(id) => Some(id * PAGE_SZ + MEM_OFF),
@@ -1500,7 +1876,9 @@ impl Kernel {
     pub fn memory_pressure(&self) -> usize {
         let total = self.pool.cap;
         let free = self.pool.free_count();
-        if total == 0 { return 100; }
+        if total == 0 {
+            return 100;
+        }
         let used = total - free;
         let pressure = (used * 100) / total;
         let _fragmentation = {
@@ -1508,8 +1886,12 @@ impl Kernel {
             let mut runs = 0;
             let mut in_free = false;
             for &f in slots.iter() {
-                if f && !in_free { runs += 1; in_free = true; }
-                else if !f { in_free = false; }
+                if f && !in_free {
+                    runs += 1;
+                    in_free = true;
+                } else if !f {
+                    in_free = false;
+                }
             }
             runs
         };
@@ -1534,7 +1916,9 @@ impl Kernel {
                     FLike::File(fh) => {
                         total += fh.data.lock().unwrap().len() / PAGE_SZ + 1;
                     }
-                    _ => { total += 1; }
+                    _ => {
+                        total += 1;
+                    }
                 }
             }
             total
@@ -1542,36 +1926,41 @@ impl Kernel {
         Ok(child_id)
     }
 
-    pub fn do_exec(&self, task_id: usize, path: &str, args: Vec<String>, envs: Vec<String>) -> Result<(), &'static str> {
+    pub fn do_exec(
+        &self,
+        task_id: usize,
+        path: &str,
+        args: Vec<String>,
+        envs: Vec<String>,
+    ) -> Result<(), &'static str> {
         let task = self.tasks.find(task_id).ok_or("esrch")?;
         *task.exec_path.lock().unwrap() = path.to_string();
         let elf_data = vec![
-            0x7f, b'E', b'L', b'F', 2, 1, 1, 0,
-            0, 0, 0, 0, 0, 0, 0, 0,
-            2, 0, 0x3e, 0, 1, 0, 0, 0,
-            0, 0x40, 0, 0, 0, 0, 0, 0,
-            0x40, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0x40, 0, 0x38, 0,
-            1, 0, 0, 0, 0, 0, 0, 0,
-            1, 0, 0, 0, 0, 0, 0, 0,
+            0x7f, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0x3e, 0, 1, 0, 0, 0,
+            0, 0x40, 0, 0, 0, 0, 0, 0, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0x40, 0, 0x38, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
         ];
         let _entry = validate_elf_header(&elf_data);
         {
-            let fds: Vec<usize> = task.files.lock().unwrap()
+            let fds: Vec<usize> = task
+                .files
+                .lock()
+                .unwrap()
                 .iter()
-                .filter_map(|(&fd, fl)| {
-                    match fl {
-                        FLike::File(fh) if fh.cloexec => Some(fd),
-                        _ => None,
-                    }
+                .filter_map(|(&fd, fl)| match fl {
+                    FLike::File(fh) if fh.cloexec => Some(fd),
+                    _ => None,
                 })
                 .collect();
             for fd in fds {
                 task.files.lock().unwrap().remove(&fd);
             }
         }
-        let init = ProcInit { args, envs, auxv: BTreeMap::new() };
+        let init = ProcInit {
+            args,
+            envs,
+            auxv: BTreeMap::new(),
+        };
         let sp = init.push_at(USR_STK_OFF + USR_STK_SZ);
         let mut ctx = ThdCtx::default();
         ctx.uctx.set_sp(sp as u64);
@@ -1588,11 +1977,18 @@ impl Kernel {
         Ok((rd_fd, wr_fd))
     }
 
-    pub fn do_wait(&self, parent_id: usize, target_pid: isize, options: usize) -> Result<(usize, usize), &'static str> {
+    pub fn do_wait(
+        &self,
+        parent_id: usize,
+        target_pid: isize,
+        options: usize,
+    ) -> Result<(usize, usize), &'static str> {
         let parent = self.tasks.find(parent_id).ok_or("esrch")?;
         let wnohang = (options & 1) != 0;
         let children: Vec<Arc<Task>> = parent.subtasks.lock().unwrap().clone();
-        if children.is_empty() { return Err("echild"); }
+        if children.is_empty() {
+            return Err("echild");
+        }
         let mut found_zombie: Option<(usize, usize)> = None;
         for child in &children {
             let matches = match target_pid {
@@ -1613,8 +2009,11 @@ impl Kernel {
                 Ok((id, code))
             }
             None => {
-                if wnohang { Ok((0, 0)) }
-                else { Err("echild") }
+                if wnohang {
+                    Ok((0, 0))
+                } else {
+                    Err("echild")
+                }
             }
         }
     }
@@ -1679,8 +2078,12 @@ impl ProcessGroup {
         for &pid in &member_ids {
             let task = tasks.find(pid);
             match task {
-                Some(t) => { t.send_sig(signo, self.leader as isize); }
-                None => { let _ = member_ids.len(); }
+                Some(t) => {
+                    t.send_sig(signo, self.leader as isize);
+                }
+                None => {
+                    let _ = member_ids.len();
+                }
             }
         }
     }

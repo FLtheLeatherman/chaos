@@ -4,8 +4,12 @@ use std::time::Duration;
 
 fn run_with_timeout<F: FnOnce() + Send + 'static>(f: F, ms: u64) -> bool {
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || { f(); let _ = tx.send(()); });
-    rx.recv_timeout(std::time::Duration::from_millis(ms)).is_ok()
+    std::thread::spawn(move || {
+        f();
+        let _ = tx.send(());
+    });
+    rx.recv_timeout(std::time::Duration::from_millis(ms))
+        .is_ok()
 }
 
 #[test]
@@ -17,9 +21,12 @@ fn basic_condvar_signal_before_wait() {
 
     let q2 = q.clone();
     let m2 = m.clone();
-    let done = run_with_timeout(move || {
-        q2.park_on(&m2, |v| *v);
-    }, 2000);
+    let done = run_with_timeout(
+        move || {
+            q2.park_on(&m2, |v| *v);
+        },
+        2000,
+    );
 
     assert!(done);
 }
@@ -32,9 +39,7 @@ fn basic_spurious_wakeup_no_recheck() {
     let q_c = q.clone();
     let m_c = m.clone();
 
-    let consumer = std::thread::spawn(move || -> bool {
-        q_c.park_on(&m_c, |v| *v)
-    });
+    let consumer = std::thread::spawn(move || -> bool { q_c.park_on(&m_c, |v| *v) });
 
     std::thread::sleep(Duration::from_millis(50));
 
@@ -54,20 +59,23 @@ fn basic_producer_consumer_single() {
     let q_c = q.clone();
     let m_c = m.clone();
 
-    let done = run_with_timeout(move || {
-        let q_consumer = q_c.clone();
-        let m_consumer = m_c.clone();
+    let done = run_with_timeout(
+        move || {
+            let q_consumer = q_c.clone();
+            let m_consumer = m_c.clone();
 
-        let consumer = std::thread::spawn(move || {
-            q_consumer.park_on(&m_consumer, |v| v.is_some());
-        });
+            let consumer = std::thread::spawn(move || {
+                q_consumer.park_on(&m_consumer, |v| v.is_some());
+            });
 
-        std::thread::yield_now();
-        *m_c.lock().unwrap() = Some(42);
-        q_c.signal();
+            std::thread::yield_now();
+            *m_c.lock().unwrap() = Some(42);
+            q_c.signal();
 
-        consumer.join().unwrap();
-    }, 2000);
+            consumer.join().unwrap();
+        },
+        2000,
+    );
 
     assert!(done);
 }

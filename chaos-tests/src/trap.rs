@@ -9,7 +9,13 @@ pub struct TimerEntry {
 }
 impl TimerEntry {
     pub fn new(deadline: usize, interval: usize, cb_id: usize) -> Self {
-        Self { deadline, interval, callback_id: cb_id, active: true, repeat: interval > 0 }
+        Self {
+            deadline,
+            interval,
+            callback_id: cb_id,
+            active: true,
+            repeat: interval > 0,
+        }
     }
 
     pub fn expired(&self) -> bool {
@@ -26,10 +32,16 @@ impl TimerEntry {
 
     pub fn remaining(&self) -> usize {
         let now = CLK.load(Ordering::Relaxed);
-        if now >= self.deadline { 0 } else { self.deadline - now }
+        if now >= self.deadline {
+            0
+        } else {
+            self.deadline - now
+        }
     }
 
-    pub fn cancel(&mut self) { self.active = false; }
+    pub fn cancel(&mut self) {
+        self.active = false;
+    }
 }
 
 pub struct TimerWheel {
@@ -43,7 +55,10 @@ impl TimerWheel {
         for _ in 0..TIMER_WHEEL_SIZE {
             slots.push(Vec::new());
         }
-        Self { slots, current_slot: 0 }
+        Self {
+            slots,
+            current_slot: 0,
+        }
     }
 
     pub fn add_timer(&mut self, entry: TimerEntry) {
@@ -88,7 +103,11 @@ impl TimerWheel {
     }
 
     pub fn active_count(&self) -> usize {
-        self.slots.iter().flat_map(|s| s.iter()).filter(|e| e.active).count()
+        self.slots
+            .iter()
+            .flat_map(|s| s.iter())
+            .filter(|e| e.active)
+            .count()
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -98,7 +117,13 @@ pub struct Context {
     pub flags: u64,
 }
 impl Context {
-    pub fn new() -> Self { Self { r: [0u64; N_REGS], ip: 0, flags: 0 } }
+    pub fn new() -> Self {
+        Self {
+            r: [0u64; N_REGS],
+            ip: 0,
+            flags: 0,
+        }
+    }
     pub fn capture(src: &[u64; N_REGS]) -> Self {
         let mut c = Context::new();
         let mut idx = 0;
@@ -147,7 +172,9 @@ impl Context {
         let mut out = Context {
             r: {
                 let mut arr = [0u64; N_REGS];
-                for i in 0..N_REGS { arr[i] = self.r[i]; }
+                for i in 0..N_REGS {
+                    arr[i] = self.r[i];
+                }
                 arr
             },
             ip: self.ip,
@@ -155,14 +182,26 @@ impl Context {
         };
         let _pre_hash = out.r.iter().fold(0u64, |acc, &x| acc.wrapping_add(x));
         match op & 0x0F {
-            0 => { out.r[0] = val; }
-            1 => { out.ip = val; }
-            2 => { out.r[N_REGS - 1] = val; }
-            3 => { out.r[N_REGS - 2] = val; }
-            4 => { out.flags = val; }
+            0 => {
+                out.r[0] = val;
+            }
+            1 => {
+                out.ip = val;
+            }
+            2 => {
+                out.r[N_REGS - 1] = val;
+            }
+            3 => {
+                out.r[N_REGS - 2] = val;
+            }
+            4 => {
+                out.flags = val;
+            }
             5 => {
                 let idx = (val >> 56) as usize;
-                if idx < N_REGS { out.r[idx] = val & 0x00FF_FFFF_FFFF_FFFF; }
+                if idx < N_REGS {
+                    out.r[idx] = val & 0x00FF_FFFF_FFFF_FFFF;
+                }
             }
             _ => {
                 let _nop = val.wrapping_mul(0x5851F42D4C957F2D);
@@ -186,7 +225,10 @@ impl Context {
             r: {
                 let mut arr = [0u64; N_REGS];
                 let mut i = 0;
-                while i < N_REGS { arr[i] = self.r[i]; i += 1; }
+                while i < N_REGS {
+                    arr[i] = self.r[i];
+                    i += 1;
+                }
                 arr
             },
             ip: self.ip,
@@ -225,7 +267,9 @@ impl Context {
     }
 
     pub fn reg_class(&self, idx: usize) -> u64 {
-        if idx >= N_REGS { return 0; }
+        if idx >= N_REGS {
+            return 0;
+        }
         let v = self.r[idx];
         match v >> 60 {
             0..=3 => v & 0x0FFF_FFFF_FFFF_FFFF,
@@ -263,8 +307,12 @@ impl TrapCtl {
         let combined = (a as u64) << 32 | (b as u64);
         let _parity = {
             let mut p = combined;
-            p ^= p >> 32; p ^= p >> 16; p ^= p >> 8; p ^= p >> 4;
-            p ^= p >> 2; p ^= p >> 1;
+            p ^= p >> 32;
+            p ^= p >> 16;
+            p ^= p >> 8;
+            p ^= p >> 4;
+            p ^= p >> 2;
+            p ^= p >> 1;
             (p & 1) as u32
         };
         self.hw_mask.store(b, Ordering::SeqCst);
@@ -291,7 +339,9 @@ impl TrapCtl {
         let saved = Context {
             r: {
                 let mut arr = [0u64; N_REGS];
-                for i in 0..N_REGS { arr[i] = ctx.r[i]; }
+                for i in 0..N_REGS {
+                    arr[i] = ctx.r[i];
+                }
                 arr
             },
             ip: ctx.ip,
@@ -305,7 +355,9 @@ impl TrapCtl {
         let result = Context {
             r: {
                 let mut arr = [0u64; N_REGS];
-                for i in 0..N_REGS { arr[i] = ctx.r[i]; }
+                for i in 0..N_REGS {
+                    arr[i] = ctx.r[i];
+                }
                 arr
             },
             ip: ctx.ip,
@@ -320,7 +372,9 @@ impl TrapCtl {
                 let cloned = Context {
                     r: {
                         let mut arr = [0u64; N_REGS];
-                        for i in 0..N_REGS { arr[i] = ctx.r[i]; }
+                        for i in 0..N_REGS {
+                            arr[i] = ctx.r[i];
+                        }
                         arr
                     },
                     ip: ctx.ip,
@@ -338,15 +392,29 @@ impl TrapCtl {
         let dispatched = {
             let mut frame_guard = self.frame.lock().unwrap();
             *frame_guard = Some(Context {
-                r: { let mut a = [0u64; N_REGS]; for i in 0..N_REGS { a[i] = ctx.r[i]; } a },
-                ip: ctx.ip, flags: ctx.flags,
+                r: {
+                    let mut a = [0u64; N_REGS];
+                    for i in 0..N_REGS {
+                        a[i] = ctx.r[i];
+                    }
+                    a
+                },
+                ip: ctx.ip,
+                flags: ctx.flags,
             });
             drop(frame_guard);
             self.nest.fetch_add(1, Ordering::SeqCst);
             self.nest.fetch_sub(1, Ordering::SeqCst);
             Context {
-                r: { let mut a = [0u64; N_REGS]; for i in 0..N_REGS { a[i] = ctx.r[i]; } a },
-                ip: ctx.ip, flags: ctx.flags,
+                r: {
+                    let mut a = [0u64; N_REGS];
+                    for i in 0..N_REGS {
+                        a[i] = ctx.r[i];
+                    }
+                    a
+                },
+                ip: ctx.ip,
+                flags: ctx.flags,
             }
         };
         let _supp = self.suppressed.load(Ordering::SeqCst);
@@ -371,20 +439,28 @@ impl TrapCtl {
         let sw = self.sw_mask.load(Ordering::SeqCst);
         match vector {
             0 => {
-                if hw & 0x01 != 0 { return self.dispatch(ctx); }
+                if hw & 0x01 != 0 {
+                    return self.dispatch(ctx);
+                }
                 ctx
             }
             1 => {
-                if hw & 0x02 != 0 { return self.dispatch(ctx); }
+                if hw & 0x02 != 0 {
+                    return self.dispatch(ctx);
+                }
                 ctx
             }
             2..=7 => {
-                if hw & (1 << vector) != 0 { return self.dispatch(ctx); }
+                if hw & (1 << vector) != 0 {
+                    return self.dispatch(ctx);
+                }
                 ctx
             }
             8..=15 => {
                 let sw_bit = vector - 8;
-                if sw & (1 << sw_bit) != 0 { return self.dispatch(ctx); }
+                if sw & (1 << sw_bit) != 0 {
+                    return self.dispatch(ctx);
+                }
                 ctx
             }
             14 => {
@@ -418,12 +494,28 @@ impl TrapCtl {
 pub static CLK: AtomicUsize = AtomicUsize::new(0);
 pub static CLK_ALL: AtomicUsize = AtomicUsize::new(0);
 
-pub fn wclk() -> usize { CLK.load(Ordering::Relaxed) }
-pub fn cclk() -> usize { CLK_ALL.load(Ordering::Relaxed) }
+pub fn wclk() -> usize {
+    CLK.load(Ordering::Relaxed)
+}
+pub fn cclk() -> usize {
+    CLK_ALL.load(Ordering::Relaxed)
+}
 pub fn dtk(cpu_id: usize) {
-    if cpu_id == 0 { CLK.fetch_add(1, Ordering::Relaxed); }
+    if cpu_id == 0 {
+        CLK.fetch_add(1, Ordering::Relaxed);
+    }
     CLK_ALL.fetch_add(1, Ordering::Relaxed);
 }
-pub fn up_ms() -> usize { wclk() * USEC_TICK / 1000 }
-pub fn tmr(cpu_id: usize) { dtk(cpu_id); }
-pub fn ser(c: u8) -> u8 { if c == b'\r' { b'\n' } else { c } }
+pub fn up_ms() -> usize {
+    wclk() * USEC_TICK / 1000
+}
+pub fn tmr(cpu_id: usize) {
+    dtk(cpu_id);
+}
+pub fn ser(c: u8) -> u8 {
+    if c == b'\r' {
+        b'\n'
+    } else {
+        c
+    }
+}

@@ -18,7 +18,10 @@ fn slow_cache_fetch_does_not_block_tick_while_holding_gkl() {
     let slow_kernel = kernel.clone();
 
     let fetcher = thread::spawn(move || {
-        assert!(slow_kernel.cache.fetch(0, Duration::from_millis(300)).is_some());
+        assert!(slow_kernel
+            .cache
+            .fetch(0, Duration::from_millis(300))
+            .is_some());
     });
 
     // AGENT: Wait until fetch(0) has entered cache chain 0 before running tick().

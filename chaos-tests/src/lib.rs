@@ -1,4 +1,11 @@
-#![allow(unused, dead_code, non_upper_case_globals, non_camel_case_types, unused_assignments, unused_mut)]
+#![allow(
+    unused,
+    dead_code,
+    non_upper_case_globals,
+    non_camel_case_types,
+    unused_assignments,
+    unused_mut
+)]
 
 pub(crate) use std::any::Any;
 pub(crate) use std::cell::RefCell;
@@ -6,7 +13,9 @@ pub(crate) use std::cmp::{max, min, Ordering as CmpOrd};
 pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, LinkedList, VecDeque};
 pub(crate) use std::fmt;
 pub(crate) use std::ops::{Deref, DerefMut, Index};
-pub(crate) use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+pub(crate) use std::sync::atomic::{
+    AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering,
+};
 pub(crate) use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
 pub(crate) use std::thread;
 pub(crate) use std::time::Duration;
@@ -48,8 +57,7 @@ pub(crate) fn chaos_log_enabled(module: &str) -> bool {
     }
     raw.split(',').any(|part| {
         let part = part.trim();
-        part.eq_ignore_ascii_case(module)
-            || (module == "gkl" && part.eq_ignore_ascii_case("locks"))
+        part.eq_ignore_ascii_case(module) || (module == "gkl" && part.eq_ignore_ascii_case("locks"))
     })
 }
 
@@ -59,6 +67,11 @@ where
     F: FnOnce() -> String,
 {
     if chaos_log_enabled(module) {
-        println!("[chaos:{} tid={:?}] {}", module, thread::current().id(), msg());
+        println!(
+            "[chaos:{} tid={:?}] {}",
+            module,
+            thread::current().id(),
+            msg()
+        );
     }
 }

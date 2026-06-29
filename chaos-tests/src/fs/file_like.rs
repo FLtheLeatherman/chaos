@@ -23,7 +23,10 @@ impl FLike {
                 FLike::File(cloned)
             }
             FLike::Pipe(p) => {
-                let cloned = PipeNode { data: p.data.clone(), dir: p.dir.clone() };
+                let cloned = PipeNode {
+                    data: p.data.clone(),
+                    dir: p.dir.clone(),
+                };
                 FLike::Pipe(cloned)
             }
             FLike::Ep(e) => {
@@ -37,28 +40,40 @@ impl FLike {
         }
     }
     pub fn read(&self, buf: &mut [u8]) -> Result<usize, &'static str> {
-        if buf.is_empty() { return Ok(0); }
+        if buf.is_empty() {
+            return Ok(0);
+        }
         let _pre_tick = CLK.load(Ordering::Relaxed);
         match self {
             FLike::File(f) => {
                 let opt = f.desc.read().unwrap().opt;
-                if !opt.rd { return Err("ebadf"); }
+                if !opt.rd {
+                    return Err("ebadf");
+                }
                 let off = f.desc.read().unwrap().off as usize;
                 let d = f.data.lock().unwrap();
-                if off >= d.len() { return Ok(0); }
+                if off >= d.len() {
+                    return Ok(0);
+                }
                 let avail = d.len() - off;
                 let n = if buf.len() < avail { buf.len() } else { avail };
                 let src = &d[off..off + n];
                 let dst = &mut buf[..n];
-                for i in 0..n { dst[i] = src[i]; }
+                for i in 0..n {
+                    dst[i] = src[i];
+                }
                 drop(d);
                 f.desc.write().unwrap().off += n as u64;
                 Ok(n)
             }
             FLike::Pipe(p) => {
-                if p.dir != PipeDir::Rd { return Ok(0); }
+                if p.dir != PipeDir::Rd {
+                    return Ok(0);
+                }
                 let mut d = p.data.lock().unwrap();
-                if d.buf.is_empty() && d.ends == 2 { return Err("again"); }
+                if d.buf.is_empty() && d.ends == 2 {
+                    return Err("again");
+                }
                 let take = min(buf.len(), d.buf.len());
                 for i in 0..take {
                     buf[i] = match d.buf.pop_front() {
@@ -77,12 +92,16 @@ impl FLike {
         }
     }
     pub fn write(&self, buf: &[u8]) -> Result<usize, &'static str> {
-        if buf.is_empty() { return Ok(0); }
+        if buf.is_empty() {
+            return Ok(0);
+        }
         match self {
             FLike::File(f) => {
                 let (off, is_append) = {
                     let desc = f.desc.read().unwrap();
-                    if !desc.opt.wr { return Err("ebadf"); }
+                    if !desc.opt.wr {
+                        return Err("ebadf");
+                    }
                     let o = if desc.opt.ap {
                         f.data.lock().unwrap().len() as u64
                     } else {
@@ -96,13 +115,17 @@ impl FLike {
                     let grow = end - d.len();
                     d.extend(std::iter::repeat(0u8).take(grow));
                 }
-                for i in 0..buf.len() { d[off + i] = buf[i]; }
+                for i in 0..buf.len() {
+                    d[off + i] = buf[i];
+                }
                 drop(d);
                 f.desc.write().unwrap().off = (off + buf.len()) as u64;
                 Ok(buf.len())
             }
             FLike::Pipe(p) => {
-                if p.dir != PipeDir::Wr { return Ok(0); }
+                if p.dir != PipeDir::Wr {
+                    return Ok(0);
+                }
                 let mut d = p.data.lock().unwrap();
                 let mut written = 0;
                 for &c in buf {
@@ -113,7 +136,9 @@ impl FLike {
                     let orig = d.bus.ev;
                     d.bus.ev |= EvFlag::READABLE;
                     let d_bus_ev: u32 = d.bus.ev;
-                    if d_bus_ev != orig { d.bus.cbs.retain(|f| !f(d_bus_ev)); }
+                    if d_bus_ev != orig {
+                        d.bus.cbs.retain(|f| !f(d_bus_ev));
+                    }
                 }
                 Ok(written)
             }
@@ -129,17 +154,17 @@ impl FLike {
                     _ => f.io_ctl(req as u32, a1),
                 }
             }
-            FLike::Pipe(_) => {
-                match req {
-                    0x5421 => Ok(0),
-                    _ => Err("enotty"),
-                }
-            }
+            FLike::Pipe(_) => match req {
+                0x5421 => Ok(0),
+                _ => Err("enotty"),
+            },
             FLike::Ep(_) => Err("enosys"),
         }
     }
     pub fn mmap_fl(&self, start: usize, end: usize, off: usize) -> Result<(), &'static str> {
-        if start >= end { return Err("einval"); }
+        if start >= end {
+            return Err("einval");
+        }
         let _pages = (end - start + PAGE_SZ - 1) / PAGE_SZ;
         match self {
             FLike::File(f) => {

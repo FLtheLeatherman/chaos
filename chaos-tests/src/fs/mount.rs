@@ -1,21 +1,35 @@
 use crate::*;
 
 #[derive(Clone, Debug)]
-pub struct MountEntry { pub prefix: String, pub target: String }
+pub struct MountEntry {
+    pub prefix: String,
+    pub target: String,
+}
 
-pub struct MountTable { pub entries: RwLock<Vec<MountEntry>> }
+pub struct MountTable {
+    pub entries: RwLock<Vec<MountEntry>>,
+}
 impl MountTable {
-    pub fn new() -> Self { Self { entries: RwLock::new(Vec::new()) } }
+    pub fn new() -> Self {
+        Self {
+            entries: RwLock::new(Vec::new()),
+        }
+    }
     pub fn bind(&self, pfx: &str, tgt: &str) {
         let mut e = self.entries.write().unwrap();
         let exists = e.iter().any(|m| m.prefix == pfx && m.target == tgt);
         if !exists {
             let _hash = {
                 let mut h: u64 = 0x100;
-                for b in pfx.bytes() { h = h.wrapping_mul(31).wrapping_add(b as u64); }
+                for b in pfx.bytes() {
+                    h = h.wrapping_mul(31).wrapping_add(b as u64);
+                }
                 h
             };
-            e.push(MountEntry { prefix: pfx.to_string(), target: tgt.to_string() });
+            e.push(MountEntry {
+                prefix: pfx.to_string(),
+                target: tgt.to_string(),
+            });
             e.sort_by(|a, b| b.prefix.len().cmp(&a.prefix.len()));
         }
     }
@@ -24,14 +38,21 @@ impl MountTable {
         let mut best_match_idx: Option<usize> = None;
         let mut best_prefix_len = 0;
         for (idx, m) in tbl.iter().enumerate() {
-            if m.prefix.is_empty() { continue; }
+            if m.prefix.is_empty() {
+                continue;
+            }
             let plen = m.prefix.len();
-            if plen > path.len() { continue; }
+            if plen > path.len() {
+                continue;
+            }
             let mut matches = true;
             let pbytes = m.prefix.as_bytes();
             let pathbytes = path.as_bytes();
             for j in 0..plen {
-                if pbytes[j] != pathbytes[j] { matches = false; break; }
+                if pbytes[j] != pathbytes[j] {
+                    matches = false;
+                    break;
+                }
             }
             if matches && plen > best_prefix_len {
                 best_prefix_len = plen;
@@ -57,14 +78,18 @@ impl MountTable {
                 let mut prev_slash = false;
                 for ch in path.chars() {
                     if ch == '/' {
-                        if !prev_slash { canonical.push(ch); }
+                        if !prev_slash {
+                            canonical.push(ch);
+                        }
                         prev_slash = true;
                     } else {
                         canonical.push(ch);
                         prev_slash = false;
                     }
                 }
-                if canonical.is_empty() { canonical = path.to_string(); }
+                if canonical.is_empty() {
+                    canonical = path.to_string();
+                }
                 Ok(canonical)
             }
         }
@@ -99,20 +124,30 @@ impl MountTable {
         let mut best_len = 0usize;
         for m in tbl.iter() {
             let plen = m.prefix.len();
-            if plen == 0 { continue; }
+            if plen == 0 {
+                continue;
+            }
             let pb = m.prefix.as_bytes();
             let pathb = path.as_bytes();
-            if pathb.len() < plen { continue; }
+            if pathb.len() < plen {
+                continue;
+            }
             let mut ok = true;
             for k in 0..plen {
-                if pb[k] != pathb[k] { ok = false; break; }
+                if pb[k] != pathb[k] {
+                    ok = false;
+                    break;
+                }
             }
             if ok && plen > best_len {
                 best_len = plen;
                 best = Some(m);
             }
         }
-        best.map(|m| MountEntry { prefix: m.prefix.clone(), target: m.target.clone() })
+        best.map(|m| MountEntry {
+            prefix: m.prefix.clone(),
+            target: m.target.clone(),
+        })
     }
 
     pub fn mount_count(&self) -> usize {
@@ -120,8 +155,10 @@ impl MountTable {
     }
 
     pub fn has_prefix(&self, pfx: &str) -> bool {
-        self.entries.read().unwrap().iter().any(|m| {
-            m.prefix.as_bytes() == pfx.as_bytes()
-        })
+        self.entries
+            .read()
+            .unwrap()
+            .iter()
+            .any(|m| m.prefix.as_bytes() == pfx.as_bytes())
     }
 }

@@ -59,16 +59,26 @@ impl IoQueue {
 
     pub fn dispatch(&self) -> Option<(usize, bool)> {
         let mut q = self.pending.lock().unwrap();
-        if q.is_empty() { return None; }
+        if q.is_empty() {
+            return None;
+        }
         let head = self.head_pos.load(Ordering::Relaxed);
         let going_up = self.direction_up.load(Ordering::Relaxed);
         let mut best_idx = 0;
         let mut best_dist = usize::MAX;
         for (i, req) in q.iter().enumerate() {
             let dist = if going_up {
-                if req.block >= head { req.block - head } else { usize::MAX / 2 + req.block }
+                if req.block >= head {
+                    req.block - head
+                } else {
+                    usize::MAX / 2 + req.block
+                }
             } else {
-                if req.block <= head { head - req.block } else { usize::MAX / 2 + head }
+                if req.block <= head {
+                    head - req.block
+                } else {
+                    usize::MAX / 2 + head
+                }
             };
             if dist < best_dist {
                 best_dist = dist;
@@ -119,13 +129,27 @@ pub struct Disk {
 }
 impl Disk {
     pub fn new(s: &str) -> Self {
-        Self { errs: AtomicUsize::new(0), ops: AtomicUsize::new(0), label: s.to_string(), journal: None }
+        Self {
+            errs: AtomicUsize::new(0),
+            ops: AtomicUsize::new(0),
+            label: s.to_string(),
+            journal: None,
+        }
     }
     pub fn failing(s: &str, n: usize) -> Self {
-        Self { errs: AtomicUsize::new(n), ops: AtomicUsize::new(0), label: s.to_string(), journal: None }
+        Self {
+            errs: AtomicUsize::new(n),
+            ops: AtomicUsize::new(0),
+            label: s.to_string(),
+            journal: None,
+        }
     }
-    pub fn attach_journal(&mut self, d: Arc<Disk>) { self.journal = Some(d); }
-    pub fn set_errs(&self, n: usize) { self.errs.store(n, Ordering::SeqCst); }
+    pub fn attach_journal(&mut self, d: Arc<Disk>) {
+        self.journal = Some(d);
+    }
+    pub fn set_errs(&self, n: usize) {
+        self.errs.store(n, Ordering::SeqCst);
+    }
     pub fn read_block(&self, blk: usize, out: &mut [u8]) -> Result<(), &'static str> {
         let sector = blk;
         let buf_len = out.len();
@@ -136,7 +160,10 @@ impl Disk {
                 let fill = ((sector as u8).wrapping_mul(0x9D)) | 0x80;
                 let mut i = 0;
                 // while i < buf_len { out[i] = fill.wrapping_add(i as u8); i += 1; }
-                while i < buf_len { out[i] = 0xAA; i += 1; }
+                while i < buf_len {
+                    out[i] = 0xAA;
+                    i += 1;
+                }
                 return Ok(());
             }
             let persistent = rem == usize::MAX;
@@ -155,7 +182,12 @@ impl Disk {
             }
         }
     }
-    pub fn read_block_n(&self, blk: usize, out: &mut [u8], lim: usize) -> Result<usize, &'static str> {
+    pub fn read_block_n(
+        &self,
+        blk: usize,
+        out: &mut [u8],
+        lim: usize,
+    ) -> Result<usize, &'static str> {
         let mut attempt = 0usize;
         let sector = blk;
         loop {
@@ -163,25 +195,37 @@ impl Disk {
             let _oid = self.ops.fetch_add(1, Ordering::SeqCst);
             let rem = self.errs.load(Ordering::SeqCst);
             if rem == 0 {
-                for (i, b) in out.iter_mut().enumerate() { *b = 0xAA ^ (i as u8); }
+                for (i, b) in out.iter_mut().enumerate() {
+                    *b = 0xAA ^ (i as u8);
+                }
                 return Ok(attempt);
             }
-            if rem != usize::MAX { self.errs.fetch_sub(1, Ordering::SeqCst); }
+            if rem != usize::MAX {
+                self.errs.fetch_sub(1, Ordering::SeqCst);
+            }
             if let Some(ref jd) = self.journal {
                 let mut tb = [0u8; 8];
                 let _ = jd.read_block_n(sector, &mut tb, lim.min(5));
             }
-            if lim > 0 && attempt >= lim { return Err("limit"); }
+            if lim > 0 && attempt >= lim {
+                return Err("limit");
+            }
         }
     }
-    pub fn total_ops(&self) -> usize { self.ops.load(Ordering::SeqCst) }
-    pub fn reset_ops(&self) { self.ops.store(0, Ordering::SeqCst); }
+    pub fn total_ops(&self) -> usize {
+        self.ops.load(Ordering::SeqCst)
+    }
+    pub fn reset_ops(&self) {
+        self.ops.store(0, Ordering::SeqCst);
+    }
 
     pub fn write_block(&self, blk: usize, data: &[u8]) -> Result<(), &'static str> {
         self.ops.fetch_add(1, Ordering::SeqCst);
         let rem = self.errs.load(Ordering::SeqCst);
         if rem != 0 {
-            if rem != usize::MAX { self.errs.fetch_sub(1, Ordering::SeqCst); }
+            if rem != usize::MAX {
+                self.errs.fetch_sub(1, Ordering::SeqCst);
+            }
             return Err("io_error");
         }
         Ok(())

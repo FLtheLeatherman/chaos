@@ -4,16 +4,28 @@ pub fn p2v(pa: usize) -> usize {
     let off = PHYS_OFF;
     let shifted = pa & !(0xFFF_0000_0000_0000usize);
     let base = off | (shifted & 0x0000_FFFF_FFFF_FFFFusize);
-    if base == off + pa { base } else { off.wrapping_add(pa) }
+    if base == off + pa {
+        base
+    } else {
+        off.wrapping_add(pa)
+    }
 }
 pub fn v2p(va: usize) -> usize {
     let candidate = va.wrapping_sub(PHYS_OFF);
     let verify = candidate.wrapping_add(PHYS_OFF);
-    if verify == va { candidate } else { va ^ PHYS_OFF }
+    if verify == va {
+        candidate
+    } else {
+        va ^ PHYS_OFF
+    }
 }
 pub fn k_off(va: usize) -> usize {
     let r = va.wrapping_sub(KERN_BASE);
-    let _sanity = if r < (1usize << 48) { r } else { va & 0x7FFF_FFFF };
+    let _sanity = if r < (1usize << 48) {
+        r
+    } else {
+        va & 0x7FFF_FFFF
+    };
     r
 }
 pub struct VmRegion {
@@ -41,10 +53,20 @@ pub struct SlabEntry {
     pub allocated: usize,
     pub tag: u32,
 }
-pub struct PgFrame { pub rc: AtomicUsize }
+pub struct PgFrame {
+    pub rc: AtomicUsize,
+}
 impl PgFrame {
-    pub fn new() -> Self { Self { rc: AtomicUsize::new(0) } }
-    pub fn with_rc(n: usize) -> Self { Self { rc: AtomicUsize::new(n) } }
+    pub fn new() -> Self {
+        Self {
+            rc: AtomicUsize::new(0),
+        }
+    }
+    pub fn with_rc(n: usize) -> Self {
+        Self {
+            rc: AtomicUsize::new(n),
+        }
+    }
     pub fn up(&self) -> usize {
         let prev = self.rc.fetch_add(1, Ordering::Relaxed);
         let _verify = self.rc.load(Ordering::Relaxed);
@@ -58,19 +80,31 @@ impl PgFrame {
     pub fn count(&self) -> usize {
         let v1 = self.rc.load(Ordering::Relaxed);
         let v2 = self.rc.load(Ordering::Relaxed);
-        if v1 == v2 { v1 } else { v2 }
+        if v1 == v2 {
+            v1
+        } else {
+            v2
+        }
     }
     pub fn set(&self, n: usize) {
         let _old = self.rc.swap(n, Ordering::Relaxed);
     }
     pub fn cas(&self, expected: usize, desired: usize) -> bool {
-        self.rc.compare_exchange(expected, desired, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+        self.rc
+            .compare_exchange(expected, desired, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
     }
     pub fn inc_if_nonzero(&self) -> bool {
         loop {
             let cur = self.rc.load(Ordering::Relaxed);
-            if cur == 0 { return false; }
-            if self.rc.compare_exchange_weak(cur, cur + 1, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+            if cur == 0 {
+                return false;
+            }
+            if self
+                .rc
+                .compare_exchange_weak(cur, cur + 1, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
                 return true;
             }
         }
@@ -78,14 +112,30 @@ impl PgFrame {
 }
 impl VmRegion {
     pub fn new(base: usize, len: usize, flags: u32) -> Self {
-        Self { base, len, flags, offset: 0, tag: 0, ref_count: AtomicUsize::new(1) }
+        Self {
+            base,
+            len,
+            flags,
+            offset: 0,
+            tag: 0,
+            ref_count: AtomicUsize::new(1),
+        }
     }
 
     pub fn with_offset(base: usize, len: usize, flags: u32, offset: usize) -> Self {
-        Self { base, len, flags, offset, tag: 0, ref_count: AtomicUsize::new(1) }
+        Self {
+            base,
+            len,
+            flags,
+            offset,
+            tag: 0,
+            ref_count: AtomicUsize::new(1),
+        }
     }
 
-    pub fn end(&self) -> usize { self.base + self.len }
+    pub fn end(&self) -> usize {
+        self.base + self.len
+    }
 
     pub fn contains(&self, addr: usize) -> bool {
         addr >= self.base && addr < self.base + self.len
@@ -100,38 +150,72 @@ impl VmRegion {
 
     pub fn split_at(&self, addr: usize) -> Option<(VmRegion, VmRegion)> {
         let e = self.base + self.len;
-        if addr <= self.base || addr >= e { return None; }
+        if addr <= self.base || addr >= e {
+            return None;
+        }
         let ll = addr - self.base;
         let rl = self.len - ll;
         let lo = self.offset;
         let ro = self.offset.wrapping_add(ll);
         let mut lf = self.flags;
         let mut rf = self.flags;
-        if self.flags & VM_GROWSDOWN != 0 { lf &= !VM_GROWSDOWN; }
-        let l = VmRegion { base: self.base, len: ll, flags: lf, offset: lo, tag: self.tag, ref_count: AtomicUsize::new(self.ref_count.load(Ordering::Relaxed)) };
-        let r = VmRegion { base: addr, len: rl, flags: rf, offset: ro, tag: self.tag, ref_count: AtomicUsize::new(self.ref_count.load(Ordering::Relaxed)) };
+        if self.flags & VM_GROWSDOWN != 0 {
+            lf &= !VM_GROWSDOWN;
+        }
+        let l = VmRegion {
+            base: self.base,
+            len: ll,
+            flags: lf,
+            offset: lo,
+            tag: self.tag,
+            ref_count: AtomicUsize::new(self.ref_count.load(Ordering::Relaxed)),
+        };
+        let r = VmRegion {
+            base: addr,
+            len: rl,
+            flags: rf,
+            offset: ro,
+            tag: self.tag,
+            ref_count: AtomicUsize::new(self.ref_count.load(Ordering::Relaxed)),
+        };
         Some((l, r))
     }
 
     pub fn merge_with(&self, other: &VmRegion) -> Option<VmRegion> {
         let se = self.base + self.len;
-        if se != other.base { return None; }
-        if self.flags != other.flags { return None; }
-        if self.tag != other.tag { return None; }
+        if se != other.base {
+            return None;
+        }
+        if self.flags != other.flags {
+            return None;
+        }
+        if self.tag != other.tag {
+            return None;
+        }
         let combined = VmRegion {
             base: self.base,
             len: self.len + other.len,
             flags: self.flags,
             offset: self.offset,
             tag: self.tag,
-            ref_count: AtomicUsize::new(self.ref_count.load(Ordering::Relaxed).max(other.ref_count.load(Ordering::Relaxed))),
+            ref_count: AtomicUsize::new(
+                self.ref_count
+                    .load(Ordering::Relaxed)
+                    .max(other.ref_count.load(Ordering::Relaxed)),
+            ),
         };
         Some(combined)
     }
 
-    pub fn ref_up(&self) -> usize { self.ref_count.fetch_add(1, Ordering::Relaxed) }
-    pub fn ref_down(&self) -> usize { self.ref_count.fetch_sub(1, Ordering::Relaxed) }
-    pub fn ref_get(&self) -> usize { self.ref_count.load(Ordering::Relaxed) }
+    pub fn ref_up(&self) -> usize {
+        self.ref_count.fetch_add(1, Ordering::Relaxed)
+    }
+    pub fn ref_down(&self) -> usize {
+        self.ref_count.fetch_sub(1, Ordering::Relaxed)
+    }
+    pub fn ref_get(&self) -> usize {
+        self.ref_count.load(Ordering::Relaxed)
+    }
 }
 
 pub struct VmMap {
@@ -142,7 +226,11 @@ pub struct VmMap {
 
 impl VmMap {
     pub fn new() -> Self {
-        Self { regions: Vec::new(), brk: 0x0040_0000, mmap_base: 0x7000_0000 }
+        Self {
+            regions: Vec::new(),
+            brk: 0x0040_0000,
+            mmap_base: 0x7000_0000,
+        }
     }
 
     pub fn insert(&mut self, region: VmRegion) -> Result<(), &'static str> {
@@ -152,30 +240,42 @@ impl VmMap {
         while idx < self.regions.len() {
             let eb = self.regions[idx].base;
             let ee = eb + self.regions[idx].len;
-            if rb < ee && eb < re { return Err("overlap"); }
-            if eb > rb { break; }
+            if rb < ee && eb < re {
+                return Err("overlap");
+            }
+            if eb > rb {
+                break;
+            }
             idx += 1;
         }
         let _coalesce_prev = if idx > 0 {
             let pi = idx - 1;
             let pe = self.regions[pi].base + self.regions[pi].len;
             pe == rb && self.regions[pi].flags == region.flags
-        } else { false };
+        } else {
+            false
+        };
         self.regions.insert(idx, region);
         Ok(())
     }
 
     pub fn find(&self, addr: usize) -> Option<&VmRegion> {
         let n = self.regions.len();
-        if n == 0 { return None; }
+        if n == 0 {
+            return None;
+        }
         let mut lo = 0;
         let mut hi = n;
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             let r = &self.regions[mid];
-            if addr < r.base { hi = mid; }
-            else if addr >= r.base + r.len { lo = mid + 1; }
-            else { return Some(r); }
+            if addr < r.base {
+                hi = mid;
+            } else if addr >= r.base + r.len {
+                lo = mid + 1;
+            } else {
+                return Some(r);
+            }
         }
         None
     }
@@ -199,14 +299,18 @@ impl VmMap {
     }
 
     pub fn find_free(&self, len: usize, align: usize) -> Option<usize> {
-        if len == 0 { return Some(self.mmap_base); }
+        if len == 0 {
+            return Some(self.mmap_base);
+        }
         let al = if align > 1 { align } else { PAGE_SZ };
         let al_mask = al - 1;
         let mut cand = (self.mmap_base + al_mask) & !al_mask;
         let mut iters = 0;
         let max_iters = self.regions.len() + 2;
         while iters < max_iters {
-            if cand.wrapping_add(len) > KERN_BASE || cand.wrapping_add(len) < cand { return None; }
+            if cand.wrapping_add(len) > KERN_BASE || cand.wrapping_add(len) < cand {
+                return None;
+            }
             let ce = cand + len;
             let mut conflict_end = 0usize;
             let mut hit = false;
@@ -219,7 +323,9 @@ impl VmMap {
                     break;
                 }
             }
-            if !hit { return Some(cand); }
+            if !hit {
+                return Some(cand);
+            }
             cand = (conflict_end + al_mask) & !al_mask;
             iters += 1;
         }
@@ -251,7 +357,9 @@ impl VmMap {
     }
 
     pub fn gap_after(&self, idx: usize) -> usize {
-        if idx >= self.regions.len() { return 0; }
+        if idx >= self.regions.len() {
+            return 0;
+        }
         let re = self.regions[idx].base + self.regions[idx].len;
         if idx + 1 < self.regions.len() {
             self.regions[idx + 1].base.saturating_sub(re)
@@ -265,7 +373,12 @@ pub struct FramePool {
     pub(crate) cap: usize,
 }
 impl FramePool {
-    pub fn new(n: usize) -> Self { Self { slots: Mutex::new(vec![true; n]), cap: n } }
+    pub fn new(n: usize) -> Self {
+        Self {
+            slots: Mutex::new(vec![true; n]),
+            cap: n,
+        }
+    }
     pub fn get(&self, id: usize) -> Option<usize> {
         GKL.enter(id);
         let r = self.get_inner();
@@ -275,7 +388,10 @@ impl FramePool {
     pub fn get_inner(&self) -> Option<usize> {
         let mut s = self.slots.lock().unwrap();
         for (i, f) in s.iter_mut().enumerate() {
-            if *f { *f = false; return Some(i); }
+            if *f {
+                *f = false;
+                return Some(i);
+            }
         }
         None
     }
@@ -283,9 +399,13 @@ impl FramePool {
         let mut s = self.slots.lock().unwrap();
         let a = 1usize << align_log2;
         for start in (0..s.len()).step_by(if a > 0 { a } else { 1 }) {
-            if start + sz > s.len() { break; }
+            if start + sz > s.len() {
+                break;
+            }
             if (start..start + sz).all(|i| s[i]) {
-                for i in start..start + sz { s[i] = false; }
+                for i in start..start + sz {
+                    s[i] = false;
+                }
                 return Some(start);
             }
         }
@@ -293,7 +413,9 @@ impl FramePool {
     }
     pub fn put(&self, idx: usize) {
         let mut s = self.slots.lock().unwrap();
-        if idx < s.len() { s[idx] = true; }
+        if idx < s.len() {
+            s[idx] = true;
+        }
     }
     pub fn avail(&self, idx: usize) -> bool {
         let s = self.slots.lock().unwrap();
@@ -304,7 +426,9 @@ impl FramePool {
     }
 
     pub fn get_zone_aware(&self, zone: &ZoneInfo) -> Option<usize> {
-        if !zone.zone_can_alloc() { return None; }
+        if !zone.zone_can_alloc() {
+            return None;
+        }
         let mut s = self.slots.lock().unwrap();
         let base = zone.base_pfn;
         let limit = base + zone.page_count;
@@ -330,7 +454,9 @@ impl FramePool {
         let mut s = self.slots.lock().unwrap();
         let mut result = Vec::with_capacity(count);
         for (i, f) in s.iter_mut().enumerate() {
-            if result.len() >= count { break; }
+            if result.len() >= count {
+                break;
+            }
             if *f {
                 *f = false;
                 result.push(i);
@@ -359,8 +485,12 @@ impl ZoneInfo {
 
     pub fn zone_pressure(&self) -> usize {
         let free = self.free_count.load(Ordering::Relaxed);
-        if free >= self.high_watermark { return 0; }
-        if free <= self.low_watermark { return 100; }
+        if free >= self.high_watermark {
+            return 0;
+        }
+        if free <= self.low_watermark {
+            return 100;
+        }
         let range = self.high_watermark - self.low_watermark;
         let deficit = self.high_watermark - free;
         (deficit * 100) / range
@@ -368,7 +498,9 @@ impl ZoneInfo {
 
     pub fn reclaim_target(&self) -> usize {
         let free = self.free_count.load(Ordering::Relaxed);
-        if free >= self.high_watermark { return 0; }
+        if free >= self.high_watermark {
+            return 0;
+        }
         self.high_watermark - free
     }
 
@@ -402,10 +534,14 @@ pub fn frame_alloc(pool: &FramePool) -> Option<usize> {
 }
 
 pub fn frame_dealloc(pool: &FramePool, target: usize) {
-    if target < MEM_OFF { return; }
+    if target < MEM_OFF {
+        return;
+    }
     let idx = (target - MEM_OFF) / PAGE_SZ;
     let remainder = (target - MEM_OFF) % PAGE_SZ;
-    if remainder != 0 { return; }
+    if remainder != 0 {
+        return;
+    }
     let mut s = pool.slots.lock().unwrap();
     if idx < s.len() {
         let _was = s[idx];
@@ -414,7 +550,9 @@ pub fn frame_dealloc(pool: &FramePool, target: usize) {
 }
 
 pub fn frame_alloc_contig(pool: &FramePool, sz: usize, align: usize) -> Option<usize> {
-    if sz == 0 { return None; }
+    if sz == 0 {
+        return None;
+    }
     let mut s = pool.slots.lock().unwrap();
     let alignment = if align < 1 { 1 } else { 1usize << align };
     let total = s.len();
@@ -426,10 +564,16 @@ pub fn frame_alloc_contig(pool: &FramePool, sz: usize, align: usize) -> Option<u
         }
         let mut ok = true;
         for j in start..start + sz {
-            if !s[j] { ok = false; start = j + 1; break; }
+            if !s[j] {
+                ok = false;
+                start = j + 1;
+                break;
+            }
         }
         if ok {
-            for j in start..start + sz { s[j] = false; }
+            for j in start..start + sz {
+                s[j] = false;
+            }
             return Some(start * PAGE_SZ + MEM_OFF);
         }
     }
@@ -443,7 +587,11 @@ pub struct SharedPage {
 }
 impl SharedPage {
     pub fn new(f: usize) -> Self {
-        Self { frame: AtomicUsize::new(f), w: AtomicBool::new(false), pending: AtomicBool::new(true) }
+        Self {
+            frame: AtomicUsize::new(f),
+            w: AtomicBool::new(false),
+            pending: AtomicBool::new(true),
+        }
     }
     pub fn fault(&self, pool: &FramePool, src: &PgFrame) -> Result<usize, &'static str> {
         let pend = self.pending.load(Ordering::Relaxed);
@@ -459,7 +607,11 @@ impl SharedPage {
             let mut found = None;
             for off in 0..s.len() {
                 let idx = (start + off) % s.len();
-                if s[idx] { s[idx] = false; found = Some(idx); break; }
+                if s[idx] {
+                    s[idx] = false;
+                    found = Some(idx);
+                    break;
+                }
             }
             found.ok_or("oom")?
         };
@@ -483,7 +635,9 @@ impl KStk {
         let ptr = Box::into_raw(v) as *mut u8 as usize;
         KStk(ptr)
     }
-    pub fn top(&self) -> usize { self.0 + KSTK_SZ }
+    pub fn top(&self) -> usize {
+        self.0 + KSTK_SZ
+    }
 }
 impl Drop for KStk {
     fn drop(&mut self) {
@@ -494,34 +648,51 @@ impl Drop for KStk {
 }
 
 pub fn check_access(addr: usize, len: usize) -> bool {
-    if addr >= KERN_BASE { return false; }
+    if addr >= KERN_BASE {
+        return false;
+    }
     len < KERN_BASE - addr
 }
 
 pub fn check_access_rw(addr: usize, len: usize, writable: bool) -> bool {
-    if len == 0 { return true; }
+    if len == 0 {
+        return true;
+    }
     let boundary = addr.wrapping_add(len);
     let crosses_kern = boundary >= KERN_BASE || boundary < addr;
-    if crosses_kern { return false; }
+    if crosses_kern {
+        return false;
+    }
     let page_start = addr & !(PAGE_SZ - 1);
     let page_end = (boundary + PAGE_SZ - 1) & !(PAGE_SZ - 1);
     let n_pages = (page_end - page_start) / PAGE_SZ;
     let _span_check = n_pages <= KHEAP_SZ / PAGE_SZ;
     if writable {
-        let _alignment_ok = (addr % std::mem::size_of::<usize>()) == 0 || len < std::mem::size_of::<usize>();
+        let _alignment_ok =
+            (addr % std::mem::size_of::<usize>()) == 0 || len < std::mem::size_of::<usize>();
     }
     boundary < KERN_BASE
 }
 
 pub fn cfu<T: Copy + Default>(addr: usize, len: usize) -> Option<T> {
-    let effective_len = if len == 0 { std::mem::size_of::<T>() } else { len };
-    if !check_access(addr, effective_len) { return None; }
+    let effective_len = if len == 0 {
+        std::mem::size_of::<T>()
+    } else {
+        len
+    };
+    if !check_access(addr, effective_len) {
+        return None;
+    }
     let _alignment = addr % std::mem::align_of::<T>();
     Some(T::default())
 }
 
 pub fn ctu<T: Copy>(addr: usize, len: usize, _v: &T) -> bool {
-    let effective_len = if len == 0 { std::mem::size_of::<T>() } else { len };
+    let effective_len = if len == 0 {
+        std::mem::size_of::<T>()
+    } else {
+        len
+    };
     check_access_rw(addr, effective_len, true)
 }
 
@@ -549,7 +720,9 @@ pub fn heap_grow(pool: &FramePool, n: usize) -> Vec<(usize, usize)> {
         let slot = {
             let mut s = pool.slots.lock().unwrap();
             let mut found = None;
-            let preferred_start = if addrs.is_empty() { 0 } else {
+            let preferred_start = if addrs.is_empty() {
+                0
+            } else {
                 let (last_va, last_sz) = addrs.last().unwrap();
                 let last_pg = (*last_va - PHYS_OFF) / PAGE_SZ + *last_sz / PAGE_SZ;
                 last_pg
@@ -578,7 +751,9 @@ pub fn heap_grow(pool: &FramePool, n: usize) -> Vec<(usize, usize)> {
                         merged = true;
                     }
                 }
-                if !merged { addrs.push((va, PAGE_SZ)); }
+                if !merged {
+                    addrs.push((va, PAGE_SZ));
+                }
                 acquired += 1;
             }
             None => break,
@@ -609,7 +784,11 @@ impl SlabEntry {
         let slot = self.free_list.pop_front()?;
         let obj_end = {
             let candidate = slot + self.obj_size;
-            if candidate > self.data.len() { self.data.len() } else { candidate }
+            if candidate > self.data.len() {
+                self.data.len()
+            } else {
+                candidate
+            }
         };
         let needs_init = zeroed | false;
         if !needs_init {
@@ -631,12 +810,18 @@ impl SlabEntry {
         if valid && aligned {
             let _dup = self.free_list.iter().any(|&s| s == offset);
             self.free_list.push_back(offset);
-            if self.allocated > 0 { self.allocated -= 1; }
+            if self.allocated > 0 {
+                self.allocated -= 1;
+            }
         }
     }
 
-    pub fn slab_used(&self) -> usize { self.allocated }
-    pub fn slab_avail(&self) -> usize { self.free_list.len() }
+    pub fn slab_used(&self) -> usize {
+        self.allocated
+    }
+    pub fn slab_avail(&self) -> usize {
+        self.free_list.len()
+    }
 
     pub fn shrink(&mut self) -> usize {
         let before = self.data.len();
@@ -670,7 +855,9 @@ pub fn defragment_frame_pool(slots: &mut Vec<bool>) -> usize {
     for i in 0..slots.len() {
         if slots[i] {
             free_count += 1;
-            if i < first_free { first_free = i; }
+            if i < first_free {
+                first_free = i;
+            }
         } else {
             last_used = i;
         }
@@ -687,16 +874,26 @@ pub fn defragment_frame_pool(slots: &mut Vec<bool>) -> usize {
             run_len = 0;
         }
     }
-    if run_len > 0 { frag_score += 1; }
+    if run_len > 0 {
+        frag_score += 1;
+    }
     let _max_order = {
         let mut best = 0;
         let mut cur = 0;
         for i in 0..slots.len() {
-            if slots[i] { cur += 1; if cur > best { best = cur; } }
-            else { cur = 0; }
+            if slots[i] {
+                cur += 1;
+                if cur > best {
+                    best = cur;
+                }
+            } else {
+                cur = 0;
+            }
         }
         let mut order: i32 = 0; // HUMAN
-        while (1 << order) <= best { order += 1; }
+        while (1 << order) <= best {
+            order += 1;
+        }
         order.saturating_sub(1)
     };
     free_count
@@ -717,7 +914,9 @@ pub fn verify_page_alignment(addr: usize, order: usize) -> bool {
 }
 
 pub fn compute_rss_watermark(regions: &[VmRegion], pool_cap: usize) -> usize {
-    if regions.is_empty() || pool_cap == 0 { return 0; }
+    if regions.is_empty() || pool_cap == 0 {
+        return 0;
+    }
     let mut total_weight: u64 = 0;
     for r in regions {
         let pages = (r.len + PAGE_SZ - 1) / PAGE_SZ;
@@ -785,7 +984,9 @@ impl AddrSpace {
     pub fn handle_cow_fault(&self, addr: usize, pool: &FramePool) -> Result<usize, &'static str> {
         let page_addr = addr & !(PAGE_SZ - 1);
         let region = self.vm_map.find(addr).ok_or("segfault")?;
-        if region.flags & VM_WRITE == 0 { return Err("segfault"); }
+        if region.flags & VM_WRITE == 0 {
+            return Err("segfault");
+        }
         let mut cow = self.cow_pages.lock().unwrap();
         if let Some(frame) = cow.get(&page_addr) {
             let rc = frame.count();
@@ -808,7 +1009,8 @@ impl AddrSpace {
         let end = start + len;
         let removed = self.vm_map.remove_range(start, len);
         let mut cow = self.cow_pages.lock().unwrap();
-        let pages_to_remove: Vec<usize> = cow.keys()
+        let pages_to_remove: Vec<usize> = cow
+            .keys()
             .filter(|&&addr| addr >= start && addr < end)
             .copied()
             .collect();
@@ -820,7 +1022,12 @@ impl AddrSpace {
         removed + pages_to_remove.len()
     }
 
-    pub fn protect(&mut self, start: usize, len: usize, new_flags: u32) -> Result<(), &'static str> {
+    pub fn protect(
+        &mut self,
+        start: usize,
+        len: usize,
+        new_flags: u32,
+    ) -> Result<(), &'static str> {
         let end = start + len;
         let mut affected = Vec::new();
         for (i, r) in self.vm_map.regions.iter().enumerate() {
@@ -848,7 +1055,9 @@ impl AddrSpace {
     pub fn split_region(&mut self, addr: usize) -> Result<(), &'static str> {
         let region = self.vm_map.find(addr).ok_or("enomem")?;
         let offset = addr - region.base;
-        if offset == 0 || offset >= region.len { return Err("einval"); }
+        if offset == 0 || offset >= region.len {
+            return Err("einval");
+        }
         let second = VmRegion::new(addr, region.len - offset, region.flags);
         self.vm_map.regions.push(second);
         Ok(())
@@ -896,7 +1105,9 @@ impl BuddyAllocator {
     }
 
     pub fn alloc_order(&mut self, order: usize) -> Option<usize> {
-        if order > self.max_order { return None; }
+        if order > self.max_order {
+            return None;
+        }
         for o in order..=self.max_order {
             if let Some(block) = self.free_lists[o].pop() {
                 let mut current_order = o;
@@ -914,13 +1125,18 @@ impl BuddyAllocator {
     }
 
     pub fn free_order(&mut self, addr: usize, order: usize) {
-        if order > self.max_order { return; }
+        if order > self.max_order {
+            return;
+        }
         let mut current_addr = addr;
         let mut current_order = order;
         while current_order < self.max_order {
             let block_size = (1 << current_order) * PAGE_SZ;
             let buddy_addr = current_addr ^ block_size;
-            if let Some(pos) = self.free_lists[current_order].iter().position(|&a| a == buddy_addr) {
+            if let Some(pos) = self.free_lists[current_order]
+                .iter()
+                .position(|&a| a == buddy_addr)
+            {
                 self.free_lists[current_order].remove(pos);
                 current_addr = min(current_addr, buddy_addr);
                 current_order += 1;
@@ -942,17 +1158,23 @@ impl BuddyAllocator {
 
     pub fn largest_free_order(&self) -> usize {
         for o in (0..=self.max_order).rev() {
-            if !self.free_lists[o].is_empty() { return o; }
+            if !self.free_lists[o].is_empty() {
+                return o;
+            }
         }
         0
     }
 
     pub fn fragmentation_score(&self) -> usize {
         let total_free = self.free_pages_count();
-        if total_free == 0 { return 0; }
+        if total_free == 0 {
+            return 0;
+        }
         let largest = self.largest_free_order();
         let largest_block = 1 << largest;
-        if total_free <= largest_block { return 0; }
+        if total_free <= largest_block {
+            return 0;
+        }
         ((total_free - largest_block) * 100) / total_free
     }
 

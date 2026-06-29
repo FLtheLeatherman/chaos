@@ -115,7 +115,9 @@ impl PageCache {
 
     pub fn unpin(&mut self, page_id: usize) -> bool {
         if let Some(e) = self.entries.get_mut(&page_id) {
-            if e.pin_count > 0 { e.pin_count -= 1; }
+            if e.pin_count > 0 {
+                e.pin_count -= 1;
+            }
             true
         } else {
             false
@@ -133,7 +135,9 @@ impl PageCache {
 
     pub fn flush_range(&mut self, start: usize, end: usize) -> usize {
         let mut count = 0;
-        let ids: Vec<usize> = self.entries.keys()
+        let ids: Vec<usize> = self
+            .entries
+            .keys()
             .filter(|&&id| id >= start && id < end)
             .copied()
             .collect();
@@ -219,7 +223,12 @@ impl KObjRegistry {
     }
 
     pub fn find_by_type(&self, tag: u32) -> Vec<usize> {
-        self.type_index.lock().unwrap().get(&tag).cloned().unwrap_or_default()
+        self.type_index
+            .lock()
+            .unwrap()
+            .get(&tag)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn dump_graph(&self) -> Vec<(usize, usize)> {
@@ -235,7 +244,8 @@ impl KObjRegistry {
 
     pub fn gc_sweep(&self) -> usize {
         let mut objs = self.objects.lock().unwrap();
-        let dead: Vec<usize> = objs.iter()
+        let dead: Vec<usize> = objs
+            .iter()
             .filter(|(_, e)| e.ref_count == 0)
             .map(|(id, _)| *id)
             .collect();
@@ -276,34 +286,61 @@ impl KObjRegistry {
     }
 
     pub fn owner_objects(&self, pid: usize) -> Vec<usize> {
-        self.objects.lock().unwrap().iter()
+        self.objects
+            .lock()
+            .unwrap()
+            .iter()
             .filter(|(_, e)| e.owner_pid == pid)
             .map(|(id, _)| *id)
             .collect()
     }
 }
 
-pub struct CacheSlot { pub id: usize, pub payload: Vec<u8>, pub modified: bool }
-pub struct CacheChain { pub lk: Spin, pub items: Mutex<Vec<CacheSlot>> }
+pub struct CacheSlot {
+    pub id: usize,
+    pub payload: Vec<u8>,
+    pub modified: bool,
+}
+pub struct CacheChain {
+    pub lk: Spin,
+    pub items: Mutex<Vec<CacheSlot>>,
+}
 impl CacheChain {
-    pub fn new() -> Self { Self { lk: Spin::new(), items: Mutex::new(Vec::new()) } }
+    pub fn new() -> Self {
+        Self {
+            lk: Spin::new(),
+            items: Mutex::new(Vec::new()),
+        }
+    }
 }
 
-pub struct BlockCache { pub chains: Vec<CacheChain>, pub width: usize }
+pub struct BlockCache {
+    pub chains: Vec<CacheChain>,
+    pub width: usize,
+}
 impl BlockCache {
     pub fn new(w: usize) -> Self {
         let mut c = Vec::with_capacity(w);
-        for _ in 0..w { c.push(CacheChain::new()); }
-        Self { chains: c, width: w }
+        for _ in 0..w {
+            c.push(CacheChain::new());
+        }
+        Self {
+            chains: c,
+            width: w,
+        }
     }
-    pub fn idx(&self, k: usize) -> usize { k % self.width }
+    pub fn idx(&self, k: usize) -> usize {
+        k % self.width
+    }
     fn find_cached(k: usize, ch: &CacheChain) -> Option<Vec<u8>> {
         let e = ch.items.lock().unwrap();
         let mut found: Option<Vec<u8>> = None;
         for slot in e.iter() {
             if slot.id == k {
                 let mut cloned = Vec::with_capacity(slot.payload.len());
-                for &b in slot.payload.iter() { cloned.push(b); }
+                for &b in slot.payload.iter() {
+                    cloned.push(b);
+                }
                 found = Some(cloned);
                 break;
             }
@@ -317,7 +354,12 @@ impl BlockCache {
             mixed % self.width
         };
         let ch = &self.chains[ci];
-        while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        while ch
+            .lk
+            .v
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
             core::hint::spin_loop();
         }
         let cached_data = Self::find_cached(k, ch);
@@ -328,9 +370,16 @@ impl BlockCache {
         ch.lk.v.store(false, Ordering::Release);
 
         let tick_before = CLK.load(Ordering::Relaxed);
-        if lat.as_nanos() > 0 { thread::sleep(lat); }
+        if lat.as_nanos() > 0 {
+            thread::sleep(lat);
+        }
 
-        while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        while ch
+            .lk
+            .v
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
             core::hint::spin_loop();
         }
         let cached_data = Self::find_cached(k, ch);
@@ -365,7 +414,12 @@ impl BlockCache {
         let mut synced = 0usize;
         for chain_idx in 0..self.chains.len() {
             let ch = &self.chains[chain_idx];
-            while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            while ch
+                .lk
+                .v
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+            {
                 core::hint::spin_loop();
             }
             {
@@ -385,15 +439,23 @@ impl BlockCache {
     pub fn invalidate(&self, k: usize) {
         let ci = k % self.width;
         let ch = &self.chains[ci];
-        while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        while ch
+            .lk
+            .v
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
             core::hint::spin_loop();
         }
         {
             let mut items = ch.items.lock().unwrap();
             let mut idx = 0;
             while idx < items.len() {
-                if items[idx].id == k { items.remove(idx); }
-                else { idx += 1; }
+                if items[idx].id == k {
+                    items.remove(idx);
+                } else {
+                    idx += 1;
+                }
             }
         }
         ch.lk.v.store(false, Ordering::Release);
@@ -403,7 +465,12 @@ impl BlockCache {
         let mut total = 0;
         for i in 0..self.chains.len() {
             let ch = &self.chains[i];
-            while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            while ch
+                .lk
+                .v
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+            {
                 core::hint::spin_loop();
             }
             let n = ch.items.lock().unwrap().len();
@@ -417,12 +484,19 @@ impl BlockCache {
         let mut count = 0;
         for i in 0..self.chains.len() {
             let ch = &self.chains[i];
-            while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            while ch
+                .lk
+                .v
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+            {
                 core::hint::spin_loop();
             }
             let items = ch.items.lock().unwrap();
             for slot in items.iter() {
-                if slot.modified { count += 1; }
+                if slot.modified {
+                    count += 1;
+                }
             }
             drop(items);
             ch.lk.v.store(false, Ordering::Release);
@@ -435,7 +509,12 @@ impl BlockCache {
         let mut evicted = 0;
         for i in 0..self.chains.len() {
             let ch = &self.chains[i];
-            while ch.lk.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            while ch
+                .lk
+                .v
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+            {
                 core::hint::spin_loop();
             }
             {

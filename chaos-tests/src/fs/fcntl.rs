@@ -8,5 +8,12 @@ pub struct FdOpt {
     pub nb: bool,
 }
 impl Default for FdOpt {
-    fn default() -> Self { Self { rd: true, wr: false, ap: false, nb: false } }
+    fn default() -> Self {
+        Self {
+            rd: true,
+            wr: false,
+            ap: false,
+            nb: false,
+        }
+    }
 }

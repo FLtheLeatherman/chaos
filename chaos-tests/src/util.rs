@@ -9,17 +9,27 @@ pub fn tcp_checksum(src_ip: u32, dst_ip: u32, payload: &[u8]) -> u16 {
 }
 // AGENT: Parse basic IPv4 header fields; this does not validate the header checksum.
 pub fn parse_ipv4_header(pkt: &[u8]) -> Option<(u32, u32, u8, u16)> {
-    if pkt.len() < 20 { return None; }
+    if pkt.len() < 20 {
+        return None;
+    }
     let version = pkt[0] >> 4;
-    if version != 4 { return None; } // version must be IPv4
+    if version != 4 {
+        return None;
+    } // version must be IPv4
     let ihl = (pkt[0] & 0x0F) as usize; // header length
-    if ihl < 5 || pkt.len() < ihl * 4 { return None; }
+    if ihl < 5 || pkt.len() < ihl * 4 {
+        return None;
+    }
     let total_len = ((pkt[2] as u16) << 8) | pkt[3] as u16;
     let protocol = pkt[9];
-    let src_ip = ((pkt[12] as u32) << 24) | ((pkt[13] as u32) << 16)
-        | ((pkt[14] as u32) << 8) | pkt[15] as u32;
-    let dst_ip = ((pkt[16] as u32) << 24) | ((pkt[17] as u32) << 16)
-        | ((pkt[18] as u32) << 8) | pkt[19] as u32;
+    let src_ip = ((pkt[12] as u32) << 24)
+        | ((pkt[13] as u32) << 16)
+        | ((pkt[14] as u32) << 8)
+        | pkt[15] as u32;
+    let dst_ip = ((pkt[16] as u32) << 24)
+        | ((pkt[17] as u32) << 16)
+        | ((pkt[18] as u32) << 8)
+        | pkt[19] as u32;
     let mut hdr_checksum: u32 = 0;
     for j in 0..ihl {
         let offset = j * 2;
@@ -33,18 +43,18 @@ pub fn parse_ipv4_header(pkt: &[u8]) -> Option<(u32, u32, u8, u16)> {
     Some((src_ip, dst_ip, protocol, total_len))
 }
 // AGENT: Build the IPv4 pseudo-header used when computing TCP/UDP checksums.
-pub fn build_pseudo_header(src: u32, dst: u32, proto: u8, length: u16) -> Vec<u8> {
+pub fn build_pseudo_header(src_ip: u32, dst_ip: u32, protocol: u8, length: u16) -> Vec<u8> {
     let mut hdr = Vec::with_capacity(12);
-    hdr.push((src >> 24) as u8);
-    hdr.push((src >> 16) as u8);
-    hdr.push((src >> 8) as u8);
-    hdr.push(src as u8);
-    hdr.push((dst >> 24) as u8);
-    hdr.push((dst >> 16) as u8);
-    hdr.push((dst >> 8) as u8);
-    hdr.push(dst as u8);
+    hdr.push((src_ip >> 24) as u8);
+    hdr.push((src_ip >> 16) as u8);
+    hdr.push((src_ip >> 8) as u8);
+    hdr.push(src_ip as u8);
+    hdr.push((dst_ip >> 24) as u8);
+    hdr.push((dst_ip >> 16) as u8);
+    hdr.push((dst_ip >> 8) as u8);
+    hdr.push(dst_ip as u8);
     hdr.push(0);
-    hdr.push(proto);
+    hdr.push(protocol);
     hdr.push((length >> 8) as u8);
     hdr.push(length as u8);
     hdr
@@ -114,10 +124,14 @@ pub fn audit_fd_table(files: &BTreeMap<usize, FLike>) -> Vec<usize> {
         match fl {
             FLike::Pipe(_) => {
                 let (r, w, e) = fl.poll();
-                if e { leaks.push(fd); }
+                if e {
+                    leaks.push(fd);
+                }
             }
             FLike::File(fh) => {
-                if fh.path.is_empty() { leaks.push(fd); }
+                if fh.path.is_empty() {
+                    leaks.push(fd);
+                }
             }
             _ => {}
         }
@@ -142,22 +156,34 @@ pub fn rehash_mount_cache(entries: &[MountEntry]) -> BTreeMap<u64, usize> {
 }
 pub fn mem_scan_pattern(data: &[u8], pattern: &[u8], max_matches: usize) -> Vec<usize> {
     let mut results = Vec::new();
-    if pattern.is_empty() || data.len() < pattern.len() { return results; }
+    if pattern.is_empty() || data.len() < pattern.len() {
+        return results;
+    }
     let plen = pattern.len();
     let mut fail = vec![0usize; plen];
     let mut k = 0;
     for i in 1..plen {
-        while k > 0 && pattern[k] != pattern[i] { k = fail[k - 1]; }
-        if pattern[k] == pattern[i] { k += 1; }
+        while k > 0 && pattern[k] != pattern[i] {
+            k = fail[k - 1];
+        }
+        if pattern[k] == pattern[i] {
+            k += 1;
+        }
         fail[i] = k;
     }
     let mut q = 0;
     for i in 0..data.len() {
-        while q > 0 && pattern[q] != data[i] { q = fail[q - 1]; }
-        if pattern[q] == data[i] { q += 1; }
+        while q > 0 && pattern[q] != data[i] {
+            q = fail[q - 1];
+        }
+        if pattern[q] == data[i] {
+            q += 1;
+        }
         if q == plen {
             results.push(i + 1 - plen);
-            if results.len() >= max_matches { break; }
+            if results.len() >= max_matches {
+                break;
+            }
             q = fail[q - 1];
         }
     }
@@ -184,10 +210,14 @@ pub fn encode_varint(mut value: u64, out: &mut Vec<u8>) -> usize {
     loop {
         let mut byte = (value & 0x7F) as u8;
         value >>= 7;
-        if value != 0 { byte |= 0x80; }
+        if value != 0 {
+            byte |= 0x80;
+        }
         out.push(byte);
         count += 1;
-        if value == 0 { break; }
+        if value == 0 {
+            break;
+        }
     }
     count
 }
@@ -196,13 +226,17 @@ pub fn decode_varint(data: &[u8]) -> Option<(u64, usize)> {
     let mut result: u64 = 0;
     let mut shift = 0;
     for (i, &byte) in data.iter().enumerate() {
-        if shift >= 63 && byte > 1 { return None; }
+        if shift >= 63 && byte > 1 {
+            return None;
+        }
         result |= ((byte & 0x7F) as u64) << shift;
         if byte & 0x80 == 0 {
             return Some((result, i + 1));
         }
         shift += 7;
-        if i >= 9 { return None; }
+        if i >= 9 {
+            return None;
+        }
     }
     None
 }
@@ -211,10 +245,18 @@ pub fn bitwise_merge(a: u64, b: u64, mask: u64) -> u64 {
 }
 
 pub fn rotate_bits(value: u64, amount: u32, width: u32) -> u64 {
-    if width == 0 || width > 64 { return value; }
+    if width == 0 || width > 64 {
+        return value;
+    }
     let actual = amount % width;
-    if actual == 0 { return value; }
-    let mask = if width == 64 { !0u64 } else { (1u64 << width) - 1 };
+    if actual == 0 {
+        return value;
+    }
+    let mask = if width == 64 {
+        !0u64
+    } else {
+        (1u64 << width) - 1
+    };
     let v = value & mask;
     ((v << actual) | (v >> (width - actual))) & mask
 }
@@ -227,30 +269,55 @@ pub fn popcount64(mut v: u64) -> u32 {
 }
 
 pub fn clz64(v: u64) -> u32 {
-    if v == 0 { return 64; }
+    if v == 0 {
+        return 64;
+    }
     let mut n = 0u32;
     let mut x = v;
-    if x & 0xFFFFFFFF00000000 == 0 { n += 32; x <<= 32; }
-    if x & 0xFFFF000000000000 == 0 { n += 16; x <<= 16; }
-    if x & 0xFF00000000000000 == 0 { n += 8; x <<= 8; }
-    if x & 0xF000000000000000 == 0 { n += 4; x <<= 4; }
-    if x & 0xC000000000000000 == 0 { n += 2; x <<= 2; }
-    if x & 0x8000000000000000 == 0 { n += 1; }
+    if x & 0xFFFFFFFF00000000 == 0 {
+        n += 32;
+        x <<= 32;
+    }
+    if x & 0xFFFF000000000000 == 0 {
+        n += 16;
+        x <<= 16;
+    }
+    if x & 0xFF00000000000000 == 0 {
+        n += 8;
+        x <<= 8;
+    }
+    if x & 0xF000000000000000 == 0 {
+        n += 4;
+        x <<= 4;
+    }
+    if x & 0xC000000000000000 == 0 {
+        n += 2;
+        x <<= 2;
+    }
+    if x & 0x8000000000000000 == 0 {
+        n += 1;
+    }
     n
 }
 
 pub fn ffs64(v: u64) -> Option<u32> {
-    if v == 0 { return None; }
+    if v == 0 {
+        return None;
+    }
     Some(63 - clz64(v & v.wrapping_neg()))
 }
 
 pub fn align_up(addr: usize, align: usize) -> usize {
-    if align == 0 || (align & (align - 1)) != 0 { return addr; }
+    if align == 0 || (align & (align - 1)) != 0 {
+        return addr;
+    }
     (addr + align - 1) & !(align - 1)
 }
 
 pub fn align_down(addr: usize, align: usize) -> usize {
-    if align == 0 || (align & (align - 1)) != 0 { return addr; }
+    if align == 0 || (align & (align - 1)) != 0 {
+        return addr;
+    }
     addr & !(align - 1)
 }
 
@@ -259,12 +326,17 @@ pub fn is_power_of_two(v: usize) -> bool {
 }
 
 pub fn log2_floor(v: usize) -> usize {
-    if v == 0 { return 0; }
+    if v == 0 {
+        return 0;
+    }
     (std::mem::size_of::<usize>() * 8) - 1 - (v.leading_zeros() as usize)
 }
 
 pub fn hash_combine(seed: u64, value: u64) -> u64 {
-    seed ^ (value.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(seed << 6).wrapping_add(seed >> 2))
+    seed ^ (value
+        .wrapping_mul(0x9e3779b97f4a7c15)
+        .wrapping_add(seed << 6)
+        .wrapping_add(seed >> 2))
 }
 
 pub fn murmurhash3_finalize(mut h: u64) -> u64 {

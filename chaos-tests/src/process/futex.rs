@@ -4,14 +4,36 @@ pub struct FutexBucket {
     waiters: Mutex<VecDeque<(usize, thread::Thread, Arc<AtomicBool>)>>,
 }
 impl FutexBucket {
-    pub fn new() -> Self { Self { waiters: Mutex::new(VecDeque::new()) } }
-    pub fn wait(&self, addr: usize, expected: u32, val: &AtomicU32, timeout: Option<Duration>) -> Result<(), &'static str> {
+    pub fn new() -> Self {
+        Self {
+            waiters: Mutex::new(VecDeque::new()),
+        }
+    }
+    pub fn wait(
+        &self,
+        addr: usize,
+        expected: u32,
+        val: &AtomicU32,
+        timeout: Option<Duration>,
+    ) -> Result<(), &'static str> {
         let flag = Arc::new(AtomicBool::new(false));
-        if val.load(Ordering::SeqCst) != expected { return Err("changed"); }
-        { let mut w = self.waiters.lock().unwrap();
-          w.push_back((addr, thread::current(), flag.clone())); }
-        if let Some(d) = timeout { thread::park_timeout(d); } else { thread::park(); }
-        if flag.load(Ordering::Relaxed) { Ok(()) } else { Err("timeout") }
+        if val.load(Ordering::SeqCst) != expected {
+            return Err("changed");
+        }
+        {
+            let mut w = self.waiters.lock().unwrap();
+            w.push_back((addr, thread::current(), flag.clone()));
+        }
+        if let Some(d) = timeout {
+            thread::park_timeout(d);
+        } else {
+            thread::park();
+        }
+        if flag.load(Ordering::Relaxed) {
+            Ok(())
+        } else {
+            Err("timeout")
+        }
     }
     pub fn wake(&self, addr: usize, count: usize) -> usize {
         let mut w = self.waiters.lock().unwrap();
@@ -22,7 +44,9 @@ impl FutexBucket {
                 t.unpark();
                 woken += 1;
                 false
-            } else { true }
+            } else {
+                true
+            }
         });
         woken
     }
@@ -45,7 +69,12 @@ impl FutexBucket {
         wk
     }
     pub fn pending_at(&self, addr: usize) -> usize {
-        self.waiters.lock().unwrap().iter().filter(|(a, _, _)| *a == addr).count()
+        self.waiters
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(a, _, _)| *a == addr)
+            .count()
     }
 }
 
@@ -54,10 +83,16 @@ pub struct FutexTable {
 }
 
 impl FutexTable {
-    pub fn new() -> Self { Self { table: Mutex::new(VecDeque::new()) } }
+    pub fn new() -> Self {
+        Self {
+            table: Mutex::new(VecDeque::new()),
+        }
+    }
 
     pub fn ftx_wait(&self, addr: usize, expected: u32, val: &AtomicU32) -> bool {
-        if val.load(Ordering::SeqCst) != expected { return false; }
+        if val.load(Ordering::SeqCst) != expected {
+            return false;
+        }
         let mut wq = self.table.lock().unwrap();
         wq.push_back((addr, thread::current()));
         drop(wq);
@@ -88,7 +123,13 @@ impl FutexTable {
         wk
     }
 
-    pub fn ftx_requeue(&self, src_addr: usize, dst_addr: usize, wake_n: usize, move_n: usize) -> usize {
+    pub fn ftx_requeue(
+        &self,
+        src_addr: usize,
+        dst_addr: usize,
+        wake_n: usize,
+        move_n: usize,
+    ) -> usize {
         let mut wq = self.table.lock().unwrap();
         let mut wk = 0;
         let mut mv = 0;

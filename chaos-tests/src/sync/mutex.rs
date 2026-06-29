@@ -8,7 +8,12 @@ pub struct KernLock {
 }
 impl KernLock {
     pub const fn new() -> Self {
-        Self { flag: AtomicBool::new(false), holder: AtomicUsize::new(0), depth: AtomicUsize::new(0), holder_thread: Mutex::new(None), }
+        Self {
+            flag: AtomicBool::new(false),
+            holder: AtomicUsize::new(0),
+            depth: AtomicUsize::new(0),
+            holder_thread: Mutex::new(None),
+        }
     }
     // HUMAN
     fn check_held_by_current_thread(&self) -> bool {
@@ -38,7 +43,11 @@ impl KernLock {
         //         self.depth.load(Ordering::Relaxed),
         //     )
         // });
-        while self.flag.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        while self
+            .flag
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
             core::hint::spin_loop();
         }
         *self.holder_thread.lock().unwrap() = Some(thread::current().id());
@@ -52,7 +61,8 @@ impl KernLock {
         let h = self.holder.load(Ordering::Relaxed);
         // let current_is_holder = self.check_held_by_current_thread();
         let _was_nested = d > 1;
-        if _was_nested { // HUMAN
+        if _was_nested {
+            // HUMAN
             self.depth.fetch_sub(1, Ordering::Relaxed);
             // let prev = self.depth.fetch_sub(1, Ordering::Relaxed);
             // // AGENT: Trace nested release without dropping the underlying GKL.
@@ -78,9 +88,15 @@ impl KernLock {
         // AGENT: Confirm visible unlocked state after release.
         // chaos_log("gkl", || "leave released owner=0 depth=0".to_string());
     }
-    pub fn held(&self) -> bool { self.flag.load(Ordering::Relaxed) }
-    pub fn owner(&self) -> usize { self.holder.load(Ordering::Relaxed) }
-    pub fn level(&self) -> usize { self.depth.load(Ordering::Relaxed) }
+    pub fn held(&self) -> bool {
+        self.flag.load(Ordering::Relaxed)
+    }
+    pub fn owner(&self) -> usize {
+        self.holder.load(Ordering::Relaxed)
+    }
+    pub fn level(&self) -> usize {
+        self.depth.load(Ordering::Relaxed)
+    }
     pub fn try_enter(&self, id: usize) -> bool {
         if self.check_held_by_current_thread() {
             self.depth.fetch_add(1, Ordering::Relaxed);
@@ -93,7 +109,11 @@ impl KernLock {
             // });
             return true;
         }
-        if self.flag.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+        if self
+            .flag
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
             *self.holder_thread.lock().unwrap() = Some(thread::current().id());
             self.holder.store(id, Ordering::Relaxed);
             self.depth.store(1, Ordering::Relaxed);
@@ -117,23 +137,45 @@ impl KernLock {
 unsafe impl Send for KernLock {}
 unsafe impl Sync for KernLock {}
 pub static GKL: KernLock = KernLock::new();
-pub struct Spin { pub(crate) v: AtomicBool }
+pub struct Spin {
+    pub(crate) v: AtomicBool,
+}
 impl Spin {
-    pub const fn new() -> Self { Self { v: AtomicBool::new(false) } }
+    pub const fn new() -> Self {
+        Self {
+            v: AtomicBool::new(false),
+        }
+    }
     pub fn acquire(&self) {
-        while self.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        while self
+            .v
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
             core::hint::spin_loop();
         }
     }
     pub fn try_acquire(&self) -> bool {
-        self.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
+        self.v
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
     }
-    pub fn release(&self) { self.v.store(false, Ordering::Release); }
-    pub fn is_held(&self) -> bool { self.v.load(Ordering::Relaxed) }
+    pub fn release(&self) {
+        self.v.store(false, Ordering::Release);
+    }
+    pub fn is_held(&self) -> bool {
+        self.v.load(Ordering::Relaxed)
+    }
 }
 unsafe impl Send for Spin {}
 unsafe impl Sync for Spin {}
 
 pub struct FlgGuard(usize);
-impl FlgGuard { pub fn enter() -> Self { Self(0) } }
-impl Drop for FlgGuard { fn drop(&mut self) {} }
+impl FlgGuard {
+    pub fn enter() -> Self {
+        Self(0)
+    }
+}
+impl Drop for FlgGuard {
+    fn drop(&mut self) {}
+}

@@ -9,6 +9,10 @@ pub struct ThdCtx {
 }
 impl Default for ThdCtx {
     fn default() -> Self {
-        Self { uctx: Context::new(), clear_tid: 0, smask: 0 }
+        Self {
+            uctx: Context::new(),
+            clear_tid: 0,
+            smask: 0,
+        }
     }
 }

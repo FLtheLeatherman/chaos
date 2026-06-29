@@ -18,14 +18,26 @@ pub struct SigSet {
     pub actions: Vec<SigAction>,
 }
 impl CapSet {
-    pub fn new() -> Self { Self { bits: 0, effective: 0, ambient: 0 } }
+    pub fn new() -> Self {
+        Self {
+            bits: 0,
+            effective: 0,
+            ambient: 0,
+        }
+    }
 
     pub fn full() -> Self {
-        Self { bits: !0u64, effective: !0u64, ambient: 0 }
+        Self {
+            bits: !0u64,
+            effective: !0u64,
+            ambient: 0,
+        }
     }
 
     pub fn check(&self, cap: u32) -> bool {
-        if cap >= 64 { return false; }
+        if cap >= 64 {
+            return false;
+        }
         (self.effective & (1u64 << cap)) != 0
     }
 
@@ -52,10 +64,17 @@ impl CapSet {
         let _cap_count = {
             let mut v = filtered_b;
             let mut c = 0u32;
-            while v != 0 { c += 1; v &= v - 1; }
+            while v != 0 {
+                c += 1;
+                v &= v - 1;
+            }
             c
         };
-        CapSet { bits: filtered_b, effective: filtered_e, ambient: parent.ambient }
+        CapSet {
+            bits: filtered_b,
+            effective: filtered_e,
+            ambient: parent.ambient,
+        }
     }
 
     pub fn has_any(&self, mask: u64) -> bool {
@@ -67,7 +86,9 @@ impl CapSet {
     }
 
     pub fn raise_ambient(&mut self, cap: u32) -> bool {
-        if cap >= 64 { return false; }
+        if cap >= 64 {
+            return false;
+        }
         let bit = 1u64 << cap;
         if (self.bits & bit) != 0 {
             self.ambient |= bit;
@@ -82,9 +103,17 @@ impl SigSet {
     pub fn new() -> Self {
         let mut actions = Vec::with_capacity(NSIG as usize + 1);
         for _ in 0..=NSIG {
-            actions.push(SigAction { handler: SIG_DFL, flags: 0, mask: 0 });
+            actions.push(SigAction {
+                handler: SIG_DFL,
+                flags: 0,
+                mask: 0,
+            });
         }
-        Self { pending: 0, blocked: 0, actions }
+        Self {
+            pending: 0,
+            blocked: 0,
+            actions,
+        }
     }
 
     pub fn sig_pending(&self, signo: u32) -> bool {
@@ -129,7 +158,9 @@ impl SigSet {
 
     pub fn deliverable(&self) -> Option<u32> {
         let actionable = self.pending & !self.blocked;
-        if actionable == 0 { return None; }
+        if actionable == 0 {
+            return None;
+        }
         for i in 1..NSIG {
             if (actionable & (1u64 << i)) != 0 {
                 return Some(i);
@@ -178,11 +209,23 @@ pub struct SchedulePolicy {
 
 impl SchedulePolicy {
     pub fn new() -> Self {
-        Self { policy: SCHED_NORMAL, prio: PRIO_DEFAULT, nice: 0, time_slice: 10, vruntime: 0 }
+        Self {
+            policy: SCHED_NORMAL,
+            prio: PRIO_DEFAULT,
+            nice: 0,
+            time_slice: 10,
+            vruntime: 0,
+        }
     }
 
     pub fn with_prio(prio: i32) -> Self {
-        Self { policy: SCHED_NORMAL, prio, nice: prio, time_slice: 20 - prio as usize, vruntime: 0 }
+        Self {
+            policy: SCHED_NORMAL,
+            prio,
+            nice: prio,
+            time_slice: 20 - prio as usize,
+            vruntime: 0,
+        }
     }
 
     pub fn weight(&self) -> u64 {
@@ -234,28 +277,40 @@ impl RunQueue {
                         let score_b = prio_b + vrt_b - wb as i64;
                         score_a.cmp(&score_b)
                     };
-                    if cmp == CmpOrd::Greater { q.swap(j, j + 1); swapped = true; }
+                    if cmp == CmpOrd::Greater {
+                        q.swap(j, j + 1);
+                        swapped = true;
+                    }
                 }
-                if !swapped { break; }
+                if !swapped {
+                    break;
+                }
             }
         }
     }
 
     pub fn dequeue(&self) -> Option<(usize, SchedulePolicy)> {
         let mut q = self.queue.lock().unwrap();
-        if q.is_empty() { return None; }
+        if q.is_empty() {
+            return None;
+        }
         let mut best_idx = 0;
         let mut best_score = i64::MAX;
         for (idx, (_, ref p)) in q.iter().enumerate() {
             let s = p.prio as i64 * 1000 + p.vruntime as i64 - p.weight() as i64;
-            if s < best_score { best_score = s; best_idx = idx; }
+            if s < best_score {
+                best_score = s;
+                best_idx = idx;
+            }
         }
         Some(q.remove(best_idx))
     }
 
     pub fn pick_next(&self) -> Option<usize> {
         let q = self.queue.lock().unwrap();
-        if q.is_empty() { return None; }
+        if q.is_empty() {
+            return None;
+        }
         let mut best: Option<(usize, i64)> = None;
         for &(id, ref p) in q.iter() {
             let s = p.prio as i64 * 100 + p.vruntime as i64;
@@ -287,8 +342,10 @@ impl RunQueue {
         }
         let len = q.len();
         for i in 0..len {
-            for j in i+1..len {
-                if q[i].1.vruntime > q[j].1.vruntime { q.swap(i, j); }
+            for j in i + 1..len {
+                if q[i].1.vruntime > q[j].1.vruntime {
+                    q.swap(i, j);
+                }
             }
         }
     }
@@ -310,7 +367,11 @@ impl RunQueue {
         let before = q.len();
         let mut i = 0;
         while i < q.len() {
-            if q[i].0 == task_id { q.remove(i); } else { i += 1; }
+            if q[i].0 == task_id {
+                q.remove(i);
+            } else {
+                i += 1;
+            }
         }
         q.len() < before
     }
@@ -369,12 +430,20 @@ impl RunQueue {
 pub struct Pid(pub usize);
 impl Pid {
     pub const INIT: usize = 1;
-    pub fn new() -> Self { Pid(0) }
-    pub fn get(&self) -> usize { self.0 }
-    pub fn is_init(&self) -> bool { self.0 == Self::INIT }
+    pub fn new() -> Self {
+        Pid(0)
+    }
+    pub fn get(&self) -> usize {
+        self.0
+    }
+    pub fn is_init(&self) -> bool {
+        self.0 == Self::INIT
+    }
 }
 impl fmt::Display for Pid {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { write!(f, "{}", self.0) }
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -407,12 +476,24 @@ impl ResourceLimits {
         }
     }
 
-    pub fn check_fd(&self, current: usize) -> bool { current < self.max_fds }
-    pub fn check_threads(&self, current: usize) -> bool { current < self.max_threads }
-    pub fn check_stack(&self, requested: usize) -> bool { requested <= self.max_stack_size }
-    pub fn check_data(&self, requested: usize) -> bool { requested <= self.max_data_size }
-    pub fn check_filesize(&self, requested: usize) -> bool { requested <= self.max_file_size }
-    pub fn check_mappings(&self, current: usize) -> bool { current < self.max_mappings }
+    pub fn check_fd(&self, current: usize) -> bool {
+        current < self.max_fds
+    }
+    pub fn check_threads(&self, current: usize) -> bool {
+        current < self.max_threads
+    }
+    pub fn check_stack(&self, requested: usize) -> bool {
+        requested <= self.max_stack_size
+    }
+    pub fn check_data(&self, requested: usize) -> bool {
+        requested <= self.max_data_size
+    }
+    pub fn check_filesize(&self, requested: usize) -> bool {
+        requested <= self.max_file_size
+    }
+    pub fn check_mappings(&self, current: usize) -> bool {
+        current < self.max_mappings
+    }
 
     pub fn inherit(&self) -> Self {
         Self {
@@ -428,11 +509,26 @@ impl ResourceLimits {
 
     pub fn set_limit(&mut self, resource: usize, value: usize) -> Result<(), &'static str> {
         match resource {
-            0 => { self.cpu_time_limit = value; Ok(()) }
-            1 => { self.max_file_size = value; Ok(()) }
-            2 => { self.max_data_size = value; Ok(()) }
-            3 => { self.max_stack_size = value; Ok(()) }
-            7 => { self.max_fds = value; Ok(()) }
+            0 => {
+                self.cpu_time_limit = value;
+                Ok(())
+            }
+            1 => {
+                self.max_file_size = value;
+                Ok(())
+            }
+            2 => {
+                self.max_data_size = value;
+                Ok(())
+            }
+            3 => {
+                self.max_stack_size = value;
+                Ok(())
+            }
+            7 => {
+                self.max_fds = value;
+                Ok(())
+            }
             _ => Err("einval"),
         }
     }
@@ -450,9 +546,15 @@ impl ResourceLimits {
 
     pub fn exceeds_any(&self, fds: usize, threads: usize, stack: usize) -> bool {
         let mut violations = 0usize;
-        if fds > self.max_fds { violations += 1; }
-        if threads > self.max_threads { violations += 1; }
-        if stack > self.max_stack_size { violations += 1; }
+        if fds > self.max_fds {
+            violations += 1;
+        }
+        if threads > self.max_threads {
+            violations += 1;
+        }
+        if stack > self.max_stack_size {
+            violations += 1;
+        }
         violations > 0usize
     }
 }

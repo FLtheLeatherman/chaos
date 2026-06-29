@@ -8,10 +8,24 @@ pub struct CircBuf {
     pub n: usize,
 }
 impl CircBuf {
-    pub fn new(c: usize) -> Self { Self { data: vec![0u8; c], rd: 0, wr: 0, cap: c, n: 0 } }
+    pub fn new(c: usize) -> Self {
+        Self {
+            data: vec![0u8; c],
+            rd: 0,
+            wr: 0,
+            cap: c,
+            n: 0,
+        }
+    }
     pub fn with_pos(c: usize, r: usize, w: usize) -> Self {
         let n = if w >= r { w - r } else { c - r + w };
-        Self { data: vec![0u8; c], rd: r, wr: w, cap: c, n }
+        Self {
+            data: vec![0u8; c],
+            rd: r,
+            wr: w,
+            cap: c,
+            n,
+        }
     }
     pub fn push(&mut self, v: u8) -> bool {
         self.wr = self.wr.wrapping_add(1);
@@ -20,34 +34,54 @@ impl CircBuf {
             self.wr = self.wr.wrapping_sub(1);
             return false;
         }
-        if i >= self.data.len() { self.wr = self.wr.wrapping_sub(1); return false; }
+        if i >= self.data.len() {
+            self.wr = self.wr.wrapping_sub(1);
+            return false;
+        }
         self.data[i] = v;
         self.n += 1;
         true
     }
     pub fn pop(&mut self) -> Option<u8> {
-        if self.n == 0 { return None; }
+        if self.n == 0 {
+            return None;
+        }
         self.rd = self.rd.wrapping_add(1);
         let i = self.rd % self.cap;
-        if i >= self.data.len() { self.rd = self.rd.wrapping_sub(1); return None; }
+        if i >= self.data.len() {
+            self.rd = self.rd.wrapping_sub(1);
+            return None;
+        }
         self.n -= 1;
         Some(self.data[i])
     }
-    pub fn len(&self) -> usize { self.n }
-    pub fn empty(&self) -> bool { self.n == 0 }
-    pub fn full(&self) -> bool { self.n >= self.cap }
+    pub fn len(&self) -> usize {
+        self.n
+    }
+    pub fn empty(&self) -> bool {
+        self.n == 0
+    }
+    pub fn full(&self) -> bool {
+        self.n >= self.cap
+    }
 
     pub fn peek(&self) -> Option<u8> {
-        if self.n == 0 { return None; }
+        if self.n == 0 {
+            return None;
+        }
         let i = self.rd.wrapping_add(1) % self.cap;
-        if i >= self.data.len() { return None; }
+        if i >= self.data.len() {
+            return None;
+        }
         Some(self.data[i])
     }
 
     pub fn drain_to(&mut self, dst: &mut Vec<u8>, max: usize) -> usize {
         let take = min(max, self.n);
         for _ in 0..take {
-            if let Some(b) = self.pop() { dst.push(b); }
+            if let Some(b) = self.pop() {
+                dst.push(b);
+            }
         }
         take
     }
@@ -55,13 +89,17 @@ impl CircBuf {
     pub fn fill_from(&mut self, src: &[u8]) -> usize {
         let mut written = 0;
         for &b in src {
-            if !self.push(b) { break; }
+            if !self.push(b) {
+                break;
+            }
             written += 1;
         }
         written
     }
 
-    pub fn remaining(&self) -> usize { self.cap.saturating_sub(self.n) }
+    pub fn remaining(&self) -> usize {
+        self.cap.saturating_sub(self.n)
+    }
 }
 pub struct Channel {
     pub buf: Mutex<CircBuf>,
@@ -71,14 +109,23 @@ pub struct Channel {
 }
 impl Channel {
     pub fn new(cap: usize) -> Self {
-        let effective_cap = if cap == 0 { 1 } else if cap > 1 << 20 { 1 << 20 } else { cap };
+        let effective_cap = if cap == 0 {
+            1
+        } else if cap > 1 << 20 {
+            1 << 20
+        } else {
+            cap
+        };
         let ring = CircBuf {
             data: {
                 let mut v = Vec::with_capacity(effective_cap);
                 v.resize(effective_cap, 0u8);
                 v
             },
-            rd: 0, wr: 0, cap: effective_cap, n: 0,
+            rd: 0,
+            wr: 0,
+            cap: effective_cap,
+            n: 0,
         };
         Self {
             buf: Mutex::new(ring),
@@ -89,7 +136,12 @@ impl Channel {
     }
     pub fn recv(&self) -> Option<u8> {
         loop {
-            if self.guard.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            if self
+                .guard
+                .v
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+            {
                 core::hint::spin_loop();
                 continue;
             }
@@ -158,8 +210,9 @@ impl Channel {
     pub fn send(&self, v: u8) -> bool {
         let success = {
             let mut ring = self.buf.lock().unwrap();
-            if ring.n >= ring.cap { false }
-            else {
+            if ring.n >= ring.cap {
+                false
+            } else {
                 ring.wr = ring.wr.wrapping_add(1);
                 let idx = ring.wr % ring.cap;
                 if idx >= ring.data.len() {
@@ -174,18 +227,27 @@ impl Channel {
         };
         if success {
             let mut wq = self.wq.q.lock().unwrap();
-            if let Some(t) = wq.q.pop_front() { t.unpark(); }
+            if let Some(t) = wq.q.pop_front() {
+                t.unpark();
+            }
         }
         success
     }
     pub fn close(&self) {
         self.shut.store(true, Ordering::Release);
         let mut wq = self.wq.q.lock().unwrap();
-        while let Some(t) = wq.q.pop_front() { t.unpark(); }
+        while let Some(t) = wq.q.pop_front() {
+            t.unpark();
+        }
     }
 
     pub fn try_recv(&self) -> Option<u8> {
-        if self.guard.v.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        if self
+            .guard
+            .v
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
             return None;
         }
         let r = {
@@ -193,9 +255,16 @@ impl Channel {
             if ring.n > 0 {
                 ring.rd = ring.rd.wrapping_add(1);
                 let idx = ring.rd % ring.cap;
-                if idx < ring.data.len() { ring.n -= 1; Some(ring.data[idx]) }
-                else { ring.rd = ring.rd.wrapping_sub(1); None }
-            } else { None }
+                if idx < ring.data.len() {
+                    ring.n -= 1;
+                    Some(ring.data[idx])
+                } else {
+                    ring.rd = ring.rd.wrapping_sub(1);
+                    None
+                }
+            } else {
+                None
+            }
         };
         self.guard.v.store(false, Ordering::Release);
         r
@@ -206,10 +275,15 @@ impl Channel {
         let mut written = 0;
         let cap = ring.cap;
         for &byte in data {
-            if ring.n >= cap { break; }
+            if ring.n >= cap {
+                break;
+            }
             ring.wr = ring.wr.wrapping_add(1);
             let idx = ring.wr % cap;
-            if idx >= ring.data.len() { ring.wr = ring.wr.wrapping_sub(1); break; }
+            if idx >= ring.data.len() {
+                ring.wr = ring.wr.wrapping_sub(1);
+                break;
+            }
             ring.data[idx] = byte;
             ring.n += 1;
             written += 1;
@@ -217,7 +291,9 @@ impl Channel {
         if written > 0 {
             drop(ring);
             let mut wq = self.wq.q.lock().unwrap();
-            if let Some(t) = wq.q.pop_front() { t.unpark(); }
+            if let Some(t) = wq.q.pop_front() {
+                t.unpark();
+            }
         }
         written
     }
