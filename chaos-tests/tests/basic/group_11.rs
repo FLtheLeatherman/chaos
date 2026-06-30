@@ -39,7 +39,7 @@ fn basic_fork_exec_workload() {
 
     // 4 direct allocations + 1 from CoW fault
     assert_eq!(kern.pool.free_count(), 59);
-    assert!(!GKL.held());
+    assert!(!GLOBAL_KERNEL_LOCK.is_held());
 }
 
 #[test]

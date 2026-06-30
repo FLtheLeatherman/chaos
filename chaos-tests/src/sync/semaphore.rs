@@ -1,59 +1,70 @@
 use crate::*;
 
-struct SemaInner {
-    cnt: isize,
-    pid: usize,
-    rm: bool,
-    bus: EvBus,
+struct SemaphoreInner {
+    // AGENT: Positive count means an acquire can take one unit immediately.
+    count: isize,
+    // AGENT: Preserved for SysV semaphore PID bookkeeping; not updated automatically here.
+    process_id: usize,
+    // AGENT: Once removed, future acquire attempts fail instead of waiting.
+    removed: bool,
+    // AGENT: Publishes coarse acquire/remove state for event-bus observers.
+    event_bus: EventBus,
 }
 
-pub struct Sema {
-    inner: Arc<Mutex<SemaInner>>,
+pub struct Semaphore {
+    inner: Arc<Mutex<SemaphoreInner>>,
 }
 
-pub struct SemaGuard<'a> {
-    s: &'a Sema,
+pub struct SemaphoreGuard<'a> {
+    semaphore: &'a Semaphore,
 }
 
-impl Sema {
-    pub fn new(c: isize) -> Self {
-        Sema {
-            inner: Arc::new(Mutex::new(SemaInner {
-                cnt: c,
-                rm: false,
-                pid: 0,
-                bus: EvBus::default(),
+impl Semaphore {
+    // AGENT: Create a counting semaphore with initial_count initially available units.
+    pub fn new(initial_count: isize) -> Self {
+        Semaphore {
+            inner: Arc::new(Mutex::new(SemaphoreInner {
+                count: initial_count,
+                removed: false,
+                process_id: 0,
+                event_bus: EventBus::default(),
             })),
         }
     }
+    // AGENT: Mark the semaphore as removed and notify observers that waiters should stop.
     pub fn remove(&self) {
-        let mut i = self.inner.lock().unwrap();
-        i.rm = true;
-        i.bus.set(EvFlag::SEM_RM);
+        let mut inner = self.inner.lock().unwrap();
+        inner.removed = true;
+        inner.event_bus.set_flags(EventFlag::SEMAPHORE_REMOVED);
     }
+    // AGENT: Return one unit to the semaphore and publish acquire readiness when positive.
     pub fn release(&self) {
-        let mut i = self.inner.lock().unwrap();
-        i.cnt += 1;
-        if i.cnt >= 1 {
-            i.bus.set(EvFlag::SEM_ACQ);
+        let mut inner = self.inner.lock().unwrap();
+        inner.count += 1;
+        if inner.count >= 1 {
+            inner.event_bus.set_flags(EventFlag::SEMAPHORE_CAN_ACQUIRE);
         }
     }
+    // AGENT: Nonblocking acquire; Ok(false) means no unit was available right now.
     pub fn try_acquire(&self) -> Result<bool, &'static str> {
-        let mut i = self.inner.lock().unwrap();
-        if i.rm {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.removed {
             return Err("removed");
         }
-        if i.cnt >= 1 {
-            i.cnt -= 1;
-            if i.cnt < 1 {
-                i.bus.clear(EvFlag::SEM_ACQ);
+        if inner.count >= 1 {
+            inner.count -= 1;
+            if inner.count < 1 {
+                inner
+                    .event_bus
+                    .clear_flags(EventFlag::SEMAPHORE_CAN_ACQUIRE);
             }
             Ok(true)
         } else {
             Ok(false)
         }
     }
-    pub fn acquire_spin(&self) -> Result<(), &'static str> {
+    // AGENT: Host simulation wait path; yield-spins instead of sleeping on the event bus.
+    pub fn acquire_by_spinning(&self) -> Result<(), &'static str> {
         loop {
             match self.try_acquire()? {
                 true => return Ok(()),
@@ -61,39 +72,44 @@ impl Sema {
             }
         }
     }
-    pub fn access(&self) -> Result<SemaGuard<'_>, &'static str> {
-        self.acquire_spin()?;
-        Ok(SemaGuard { s: self })
+    // AGENT: RAII acquire helper; dropping the returned guard releases one unit.
+    pub fn access(&self) -> Result<SemaphoreGuard<'_>, &'static str> {
+        self.acquire_by_spinning()?;
+        Ok(SemaphoreGuard { semaphore: self })
     }
-    pub fn get_val(&self) -> isize {
-        self.inner.lock().unwrap().cnt
+    pub fn get_value(&self) -> isize {
+        self.inner.lock().unwrap().count
     }
-    pub fn get_ncnt(&self) -> usize {
-        self.inner.lock().unwrap().bus.cb_len()
+    pub fn event_callback_count(&self) -> usize {
+        self.inner.lock().unwrap().event_bus.callback_count()
     }
-    pub fn get_pid(&self) -> usize {
-        self.inner.lock().unwrap().pid
+    pub fn get_process_id(&self) -> usize {
+        self.inner.lock().unwrap().process_id
     }
-    pub fn set_pid(&self, p: usize) {
-        self.inner.lock().unwrap().pid = p;
+    pub fn set_process_id(&self, process_id: usize) {
+        self.inner.lock().unwrap().process_id = process_id;
     }
-    pub fn set_val(&self, v: isize) {
-        let mut i = self.inner.lock().unwrap();
-        i.cnt = v;
-        if i.cnt >= 1 {
-            i.bus.set(EvFlag::SEM_ACQ);
+    pub fn set_value(&self, value: isize) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.count = value;
+        if inner.count >= 1 {
+            inner.event_bus.set_flags(EventFlag::SEMAPHORE_CAN_ACQUIRE);
+        } else {
+            inner
+                .event_bus
+                .clear_flags(EventFlag::SEMAPHORE_CAN_ACQUIRE);
         }
     }
 }
 
-impl<'a> Drop for SemaGuard<'a> {
+impl<'a> Drop for SemaphoreGuard<'a> {
     fn drop(&mut self) {
-        self.s.release();
+        self.semaphore.release();
     }
 }
-impl<'a> Deref for SemaGuard<'a> {
-    type Target = Sema;
+impl<'a> Deref for SemaphoreGuard<'a> {
+    type Target = Semaphore;
     fn deref(&self) -> &Self::Target {
-        self.s
+        self.semaphore
     }
 }

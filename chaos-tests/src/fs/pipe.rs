@@ -8,7 +8,7 @@ pub enum PipeDir {
 
 pub struct PipeBuf {
     pub buf: VecDeque<u8>,
-    pub bus: EvBus,
+    pub event_bus: EventBus,
     pub ends: i32,
 }
 
@@ -22,7 +22,7 @@ impl Drop for PipeNode {
     fn drop(&mut self) {
         let mut d = self.data.lock().unwrap();
         d.ends -= 1;
-        d.bus.set(EvFlag::CLOSED);
+        d.event_bus.set_flags(EventFlag::CLOSED);
     }
 }
 
@@ -30,7 +30,7 @@ impl PipeNode {
     pub fn pair() -> (PipeNode, PipeNode) {
         let inner = PipeBuf {
             buf: VecDeque::new(),
-            bus: EvBus::default(),
+            event_bus: EventBus::default(),
             ends: 2,
         };
         let d = Arc::new(Mutex::new(inner));
@@ -74,7 +74,7 @@ impl PipeNode {
             buf[i] = d.buf.pop_front().unwrap();
         }
         if d.buf.is_empty() {
-            d.bus.clear(EvFlag::READABLE);
+            d.event_bus.clear_flags(EventFlag::READABLE);
         }
         Ok(n)
     }
@@ -86,7 +86,7 @@ impl PipeNode {
         for &c in buf {
             d.buf.push_back(c);
         }
-        d.bus.set(EvFlag::READABLE);
+        d.event_bus.set_flags(EventFlag::READABLE);
         Ok(buf.len())
     }
     pub fn poll(&self) -> (bool, bool, bool) {

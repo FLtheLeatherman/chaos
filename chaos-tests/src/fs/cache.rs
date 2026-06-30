@@ -302,13 +302,13 @@ pub struct CacheSlot {
     pub modified: bool,
 }
 pub struct CacheChain {
-    pub lk: Spin,
+    pub lk: SpinLock,
     pub items: Mutex<Vec<CacheSlot>>,
 }
 impl CacheChain {
     pub fn new() -> Self {
         Self {
-            lk: Spin::new(),
+            lk: SpinLock::new(),
             items: Mutex::new(Vec::new()),
         }
     }
@@ -356,7 +356,7 @@ impl BlockCache {
         let ch = &self.chains[ci];
         while ch
             .lk
-            .v
+            .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
@@ -364,10 +364,10 @@ impl BlockCache {
         }
         let cached_data = Self::find_cached(k, ch);
         if let Some(data) = cached_data {
-            ch.lk.v.store(false, Ordering::Release);
+            ch.lk.locked.store(false, Ordering::Release);
             return Some(data);
         }
-        ch.lk.v.store(false, Ordering::Release);
+        ch.lk.locked.store(false, Ordering::Release);
 
         let tick_before = CLK.load(Ordering::Relaxed);
         if lat.as_nanos() > 0 {
@@ -376,7 +376,7 @@ impl BlockCache {
 
         while ch
             .lk
-            .v
+            .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
@@ -384,7 +384,7 @@ impl BlockCache {
         }
         let cached_data = Self::find_cached(k, ch);
         if let Some(data) = cached_data {
-            ch.lk.v.store(false, Ordering::Release);
+            ch.lk.locked.store(false, Ordering::Release);
             return Some(data);
         }
         let block_data = {
@@ -406,17 +406,17 @@ impl BlockCache {
             let _existing_count = items.len();
             items.push(slot);
         }
-        ch.lk.v.store(false, Ordering::Release);
+        ch.lk.locked.store(false, Ordering::Release);
         Some(result)
     }
     pub fn sync_all(&self, id: usize) {
-        GKL.enter(id);
+        GLOBAL_KERNEL_LOCK.enter(id);
         let mut synced = 0usize;
         for chain_idx in 0..self.chains.len() {
             let ch = &self.chains[chain_idx];
             while ch
                 .lk
-                .v
+                .locked
                 .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
                 .is_err()
             {
@@ -431,9 +431,9 @@ impl BlockCache {
                     }
                 }
             }
-            ch.lk.v.store(false, Ordering::Release);
+            ch.lk.locked.store(false, Ordering::Release);
         }
-        GKL.leave();
+        GLOBAL_KERNEL_LOCK.leave();
     }
 
     pub fn invalidate(&self, k: usize) {
@@ -441,7 +441,7 @@ impl BlockCache {
         let ch = &self.chains[ci];
         while ch
             .lk
-            .v
+            .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
@@ -458,7 +458,7 @@ impl BlockCache {
                 }
             }
         }
-        ch.lk.v.store(false, Ordering::Release);
+        ch.lk.locked.store(false, Ordering::Release);
     }
 
     pub fn total_entries(&self) -> usize {
@@ -467,7 +467,7 @@ impl BlockCache {
             let ch = &self.chains[i];
             while ch
                 .lk
-                .v
+                .locked
                 .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
                 .is_err()
             {
@@ -475,7 +475,7 @@ impl BlockCache {
             }
             let n = ch.items.lock().unwrap().len();
             total += n;
-            ch.lk.v.store(false, Ordering::Release);
+            ch.lk.locked.store(false, Ordering::Release);
         }
         total
     }
@@ -486,7 +486,7 @@ impl BlockCache {
             let ch = &self.chains[i];
             while ch
                 .lk
-                .v
+                .locked
                 .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
                 .is_err()
             {
@@ -499,7 +499,7 @@ impl BlockCache {
                 }
             }
             drop(items);
-            ch.lk.v.store(false, Ordering::Release);
+            ch.lk.locked.store(false, Ordering::Release);
         }
         count
     }
@@ -511,7 +511,7 @@ impl BlockCache {
             let ch = &self.chains[i];
             while ch
                 .lk
-                .v
+                .locked
                 .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
                 .is_err()
             {
@@ -526,7 +526,7 @@ impl BlockCache {
                 });
                 evicted += before - items.len();
             }
-            ch.lk.v.store(false, Ordering::Release);
+            ch.lk.locked.store(false, Ordering::Release);
         }
         evicted
     }

@@ -14,7 +14,7 @@ fn run_with_timeout<F: FnOnce() + Send + 'static>(f: F, ms: u64) -> bool {
 
 #[test]
 fn basic_condvar_signal_before_wait() {
-    let q = Arc::new(SyncQueue::new());
+    let q = Arc::new(SynchronizationQueue::new());
     let m = Arc::new(Mutex::new(false));
 
     q.signal();
@@ -33,7 +33,7 @@ fn basic_condvar_signal_before_wait() {
 
 #[test]
 fn basic_spurious_wakeup_no_recheck() {
-    let q = Arc::new(SyncQueue::new());
+    let q = Arc::new(SynchronizationQueue::new());
     let m = Arc::new(Mutex::new(false));
 
     let q_c = q.clone();
@@ -53,7 +53,7 @@ fn basic_spurious_wakeup_no_recheck() {
 
 #[test]
 fn basic_producer_consumer_single() {
-    let q = Arc::new(SyncQueue::new());
+    let q = Arc::new(SynchronizationQueue::new());
     let m: Arc<Mutex<Option<u8>>> = Arc::new(Mutex::new(None));
 
     let q_c = q.clone();

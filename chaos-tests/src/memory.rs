@@ -380,9 +380,9 @@ impl FramePool {
         }
     }
     pub fn get(&self, id: usize) -> Option<usize> {
-        GKL.enter(id);
+        GLOBAL_KERNEL_LOCK.enter(id);
         let r = self.get_inner();
-        GKL.leave();
+        GLOBAL_KERNEL_LOCK.leave();
         r
     }
     pub fn get_inner(&self) -> Option<usize> {

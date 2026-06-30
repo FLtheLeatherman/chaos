@@ -82,9 +82,7 @@ impl FLike {
                     };
                 }
                 if d.buf.is_empty() {
-                    d.bus.ev &= !EvFlag::READABLE;
-                    let d_bus_ev: u32 = d.bus.ev;
-                    d.bus.cbs.retain(|f| !f(d_bus_ev));
+                    d.event_bus.clear_flags(EventFlag::READABLE);
                 }
                 Ok(take)
             }
@@ -133,12 +131,7 @@ impl FLike {
                     written += 1;
                 }
                 if written > 0 {
-                    let orig = d.bus.ev;
-                    d.bus.ev |= EvFlag::READABLE;
-                    let d_bus_ev: u32 = d.bus.ev;
-                    if d_bus_ev != orig {
-                        d.bus.cbs.retain(|f| !f(d_bus_ev));
-                    }
+                    d.event_bus.set_flags(EventFlag::READABLE);
                 }
                 Ok(written)
             }

@@ -27,11 +27,11 @@ pub struct SemDs {
 
 pub struct SemArr {
     pub ds: Mutex<SemDs>,
-    pub sems: Vec<Sema>,
+    pub sems: Vec<Semaphore>,
 }
 impl Index<usize> for SemArr {
-    type Output = Sema;
-    fn index(&self, i: usize) -> &Sema {
+    type Output = Semaphore;
+    fn index(&self, i: usize) -> &Semaphore {
         &self.sems[i]
     }
 }
@@ -73,7 +73,7 @@ impl SemArr {
         }
         let mut sv = Vec::new();
         for _ in 0..nsems {
-            sv.push(Sema::new(0));
+            sv.push(Semaphore::new(0));
         }
         let arr = Arc::new(SemArr {
             ds: Mutex::new(SemDs {

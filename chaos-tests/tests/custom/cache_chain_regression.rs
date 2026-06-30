@@ -46,5 +46,5 @@ fn slow_cache_fetch_does_not_block_tick_while_holding_gkl() {
 
     fetcher.join().unwrap();
     assert!(tick_done);
-    assert!(!GKL.held());
+    assert!(!GLOBAL_KERNEL_LOCK.is_held());
 }

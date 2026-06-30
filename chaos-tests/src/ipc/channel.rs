@@ -103,8 +103,8 @@ impl CircBuf {
 }
 pub struct Channel {
     pub buf: Mutex<CircBuf>,
-    pub guard: Spin,
-    pub wq: SyncQueue,
+    pub guard: SpinLock,
+    pub synchronization_queue: SynchronizationQueue,
     pub shut: AtomicBool,
 }
 impl Channel {
@@ -129,8 +129,8 @@ impl Channel {
         };
         Self {
             buf: Mutex::new(ring),
-            guard: Spin::new(),
-            wq: SyncQueue::new(),
+            guard: SpinLock::new(),
+            synchronization_queue: SynchronizationQueue::new(),
             shut: AtomicBool::new(false),
         }
     }
@@ -138,7 +138,7 @@ impl Channel {
         loop {
             if self
                 .guard
-                .v
+                .locked
                 .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
                 .is_err()
             {
@@ -164,11 +164,11 @@ impl Channel {
             }
         };
         if result.is_some() {
-            self.guard.v.store(false, Ordering::Release);
+            self.guard.locked.store(false, Ordering::Release);
             return result;
         }
         if self.shut.load(Ordering::Relaxed) {
-            self.guard.v.store(false, Ordering::Release);
+            self.guard.locked.store(false, Ordering::Release);
             return None;
         }
         {
@@ -179,11 +179,11 @@ impl Channel {
                     drop(d);
                 } else {
                     drop(d);
-                    let mut wq = self.wq.q.lock().unwrap();
-                    wq.q.push_back(thread::current());
-                    drop(wq);
+                    let mut wait_queue = self.synchronization_queue.wait_queue.lock().unwrap();
+                    wait_queue.threads.push_back(thread::current());
+                    drop(wait_queue);
                     // HUMAN
-                    self.guard.v.store(false, Ordering::Release);
+                    self.guard.locked.store(false, Ordering::Release);
                     thread::park();
                 }
             }
@@ -204,7 +204,7 @@ impl Channel {
                 None
             }
         };
-        self.guard.v.store(false, Ordering::Release);
+        self.guard.locked.store(false, Ordering::Release);
         v
     }
     pub fn send(&self, v: u8) -> bool {
@@ -226,25 +226,25 @@ impl Channel {
             }
         };
         if success {
-            let mut wq = self.wq.q.lock().unwrap();
-            if let Some(t) = wq.q.pop_front() {
-                t.unpark();
+            let mut wait_queue = self.synchronization_queue.wait_queue.lock().unwrap();
+            if let Some(thread) = wait_queue.threads.pop_front() {
+                thread.unpark();
             }
         }
         success
     }
     pub fn close(&self) {
         self.shut.store(true, Ordering::Release);
-        let mut wq = self.wq.q.lock().unwrap();
-        while let Some(t) = wq.q.pop_front() {
-            t.unpark();
+        let mut wait_queue = self.synchronization_queue.wait_queue.lock().unwrap();
+        while let Some(thread) = wait_queue.threads.pop_front() {
+            thread.unpark();
         }
     }
 
     pub fn try_recv(&self) -> Option<u8> {
         if self
             .guard
-            .v
+            .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
@@ -266,7 +266,7 @@ impl Channel {
                 None
             }
         };
-        self.guard.v.store(false, Ordering::Release);
+        self.guard.locked.store(false, Ordering::Release);
         r
     }
 
@@ -290,9 +290,9 @@ impl Channel {
         }
         if written > 0 {
             drop(ring);
-            let mut wq = self.wq.q.lock().unwrap();
-            if let Some(t) = wq.q.pop_front() {
-                t.unpark();
+            let mut wait_queue = self.synchronization_queue.wait_queue.lock().unwrap();
+            if let Some(thread) = wait_queue.threads.pop_front() {
+                thread.unpark();
             }
         }
         written

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn basic_spinlock_protect_data() {
-    let spin = Arc::new(Spin::new());
+    let spin = Arc::new(SpinLock::new());
     let data = Arc::new(AtomicUsize::new(0));
 
     let s = spin.clone();
@@ -36,7 +36,7 @@ fn basic_sleep_under_spinlock_uniprocessor() {
 
 #[test]
 fn basic_spinlock_held_duration() {
-    let spin = Arc::new(Spin::new());
+    let spin = Arc::new(SpinLock::new());
     let s1 = spin.clone();
     let s2 = spin.clone();
 

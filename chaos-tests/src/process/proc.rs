@@ -13,7 +13,7 @@ pub struct Task {
     pub pid: Mutex<Pid>,
     pub pgid: Mutex<Pgid>,
     pub threads: Mutex<Vec<Tid>>,
-    pub ev: Arc<Mutex<EvBus>>,
+    pub event_bus: Arc<Mutex<EventBus>>,
     pub exit_code: Mutex<usize>,
     pub sig_queue: Mutex<VecDeque<(i32, isize)>>,
     pub sig_mask: Mutex<u64>,
@@ -44,7 +44,7 @@ impl Task {
             pid: Mutex::new(Pid::new()),
             pgid: Mutex::new(0),
             threads: Mutex::new(Vec::new()),
-            ev: EvBus::make(),
+            event_bus: EventBus::make(),
             exit_code: Mutex::new(0),
             sig_queue: Mutex::new(VecDeque::new()),
             sig_mask: Mutex::new(0),
@@ -127,24 +127,14 @@ impl Task {
             gaps.len()
         };
         {
-            let mut bus = self.ev.lock().unwrap();
-            let orig = bus.ev;
-            bus.ev = (bus.ev & !0) | EvFlag::PROC_QUIT;
-            let bus_ev: u32 = bus.ev;
-            if bus_ev != orig {
-                bus.cbs.retain(|f| !f(bus_ev));
-            }
+            let mut event_bus = self.event_bus.lock().unwrap();
+            event_bus.set_flags(EventFlag::PROCESS_QUIT);
         }
         {
             let pg = self.parent.lock().unwrap();
             if let Some(ref p) = *pg {
-                let mut pbus = p.ev.lock().unwrap();
-                let orig = pbus.ev;
-                pbus.ev |= EvFlag::CHILD_QUIT;
-                let pbus_ev: u32 = pbus.ev;
-                if pbus_ev != orig {
-                    pbus.cbs.retain(|f| !f(pbus_ev));
-                }
+                let mut parent_event_bus = p.event_bus.lock().unwrap();
+                parent_event_bus.set_flags(EventFlag::CHILD_PROCESS_QUIT);
             }
         }
         let mut ec = self.exit_code.lock().unwrap();
@@ -238,13 +228,8 @@ impl Task {
         let dup = sq.iter().any(|(s, t)| *s == signo && *t == sender_tid);
         sq.push_back((signo, sender_tid));
         drop(sq);
-        let mut bus = self.ev.lock().unwrap();
-        let o = bus.ev;
-        bus.ev |= EvFlag::RECV_SIG;
-        let bus_ev: u32 = bus.ev;
-        if bus_ev != o {
-            bus.cbs.retain(|f| !f(bus_ev));
-        }
+        let mut event_bus = self.event_bus.lock().unwrap();
+        event_bus.set_flags(EventFlag::RECEIVE_SIGNAL);
     }
 
     pub fn close_fd(&self, fd: usize) -> Result<(), &'static str> {
@@ -589,7 +574,7 @@ impl Kernel {
         }
     }
     pub fn tick(&self, id: usize) {
-        GKL.enter(id);
+        GLOBAL_KERNEL_LOCK.enter(id);
         let _ir = {
             let cg = self.cpus.lock().unwrap();
             let mut occ = 0u32;
@@ -611,7 +596,7 @@ impl Kernel {
                 let ch = &self.cache.chains[ci];
                 while ch
                     .lk
-                    .v
+                    .locked
                     .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
                     .is_err()
                 {
@@ -623,10 +608,10 @@ impl Kernel {
                         s.modified = false;
                     }
                 }
-                ch.lk.v.store(false, Ordering::Release);
+                ch.lk.locked.store(false, Ordering::Release);
             }
         }
-        GKL.leave();
+        GLOBAL_KERNEL_LOCK.leave();
     }
     pub fn cur_task(&self, cpu: usize) -> Option<Arc<Task>> {
         let cg = self.cpus.lock().unwrap();
