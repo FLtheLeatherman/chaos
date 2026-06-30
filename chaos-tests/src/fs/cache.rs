@@ -35,7 +35,7 @@ impl PageCache {
             self.lru_order.retain(|&id| id != page_id);
             self.lru_order.push_back(page_id);
             if let Some(e) = self.entries.get_mut(&page_id) {
-                e.access_tick = CLK.load(Ordering::Relaxed);
+                e.access_tick = TICK.load(Ordering::Relaxed);
             }
             self.entries.get(&page_id).map(|e| e.data.as_slice())
         } else {
@@ -52,7 +52,7 @@ impl PageCache {
             page_id,
             data,
             dirty: false,
-            access_tick: CLK.load(Ordering::Relaxed),
+            access_tick: TICK.load(Ordering::Relaxed),
             pin_count: 0,
         };
         self.entries.insert(page_id, entry);
@@ -183,7 +183,7 @@ impl KObjRegistry {
             obj_id: id,
             type_tag,
             owner_pid,
-            created_tick: CLK.load(Ordering::Relaxed),
+            created_tick: TICK.load(Ordering::Relaxed),
             ref_count: 1,
             parent_id: None,
         };
@@ -199,7 +199,7 @@ impl KObjRegistry {
             obj_id: id,
             type_tag,
             owner_pid,
-            created_tick: CLK.load(Ordering::Relaxed),
+            created_tick: TICK.load(Ordering::Relaxed),
             ref_count: 1,
             parent_id: Some(parent),
         };
@@ -369,7 +369,7 @@ impl BlockCache {
         }
         ch.lk.locked.store(false, Ordering::Release);
 
-        let tick_before = CLK.load(Ordering::Relaxed);
+        let tick_before = TICK.load(Ordering::Relaxed);
         if lat.as_nanos() > 0 {
             thread::sleep(lat);
         }
@@ -505,7 +505,7 @@ impl BlockCache {
     }
 
     pub fn evict_cold(&self, max_age: usize) -> usize {
-        let now = CLK.load(Ordering::Relaxed);
+        let now = TICK.load(Ordering::Relaxed);
         let mut evicted = 0;
         for i in 0..self.chains.len() {
             let ch = &self.chains[i];

@@ -9,7 +9,7 @@ pub enum FLike {
 
 impl FLike {
     pub fn dup(&self, cloexec: bool) -> FLike {
-        let _ts = CLK.load(Ordering::Relaxed);
+        let _ts = TICK.load(Ordering::Relaxed);
         match self {
             FLike::File(f) => {
                 let cloned = FHandle {
@@ -43,7 +43,7 @@ impl FLike {
         if buf.is_empty() {
             return Ok(0);
         }
-        let _pre_tick = CLK.load(Ordering::Relaxed);
+        let _pre_tick = TICK.load(Ordering::Relaxed);
         match self {
             FLike::File(f) => {
                 let opt = f.desc.read().unwrap().opt;

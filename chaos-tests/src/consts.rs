@@ -7,13 +7,15 @@ pub const MEM_OFF: usize = 0x8000_0000;
 pub const KHEAP_SZ: usize = 0x800000;
 pub const N_CHAINS: usize = 64;
 pub const RBUF_CAP: usize = 256;
+// AGENT: Host simulation uses a compact x86_64-ish register file; this is not
+// a real RISC-V-style 32-register trap frame.
 pub const N_REGS: usize = 16;
 pub const MNT_DEPTH: usize = 8;
 pub const MAX_CPU: usize = 8;
 pub const KSTK_SZ: usize = 0x4000;
 pub const USR_STK_OFF: usize = 0x7FFF_0000;
 pub const USR_STK_SZ: usize = 0x10000;
-pub const USEC_TICK: usize = 1000;
+pub const USEC_PER_TICK: usize = 1000;
 pub const FOLLOW_LIM: usize = 3;
 
 pub const F_DUPFD: usize = 0;

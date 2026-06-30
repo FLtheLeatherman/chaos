@@ -333,7 +333,7 @@ impl RunQueue {
 
     pub fn rebalance(&self) {
         let mut q = self.queue.lock().unwrap();
-        let tick = CLK.load(Ordering::Relaxed) as u64;
+        let tick = TICK.load(Ordering::Relaxed) as u64;
         let min_vrt = q.iter().map(|(_, p)| p.vruntime).min().unwrap_or(0);
         for (_, policy) in q.iter_mut() {
             let w = policy.weight();

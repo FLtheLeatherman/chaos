@@ -1,5 +1,7 @@
 use crate::*;
 
+// AGENT: Timer-wheel record for a simulated kernel timer; current code stores
+// only an id, so firing a timer does not directly call back or wake a task.
 pub struct TimerEntry {
     pub deadline: usize,
     pub interval: usize,
@@ -19,19 +21,22 @@ impl TimerEntry {
     }
 
     pub fn expired(&self) -> bool {
-        CLK.load(Ordering::Relaxed) > self.deadline
+        // AGENT: Deadlines are compared against the global simulated tick.
+        TICK.load(Ordering::Relaxed) > self.deadline
     }
 
     pub fn reset(&mut self) {
         if self.repeat {
-            self.deadline = CLK.load(Ordering::Relaxed) + self.interval;
+            // AGENT: Periodic timers are rescheduled relative to the current
+            // tick, not relative to the old deadline.
+            self.deadline = TICK.load(Ordering::Relaxed) + self.interval;
         } else {
             self.active = false;
         }
     }
 
     pub fn remaining(&self) -> usize {
-        let now = CLK.load(Ordering::Relaxed);
+        let now = TICK.load(Ordering::Relaxed);
         if now >= self.deadline {
             0
         } else {
@@ -44,6 +49,8 @@ impl TimerEntry {
     }
 }
 
+// AGENT: Intended as an O(1)-ish bucketed timer queue, but no active
+// chaos-tests path currently calls advance() from tick or schedule_tick.
 pub struct TimerWheel {
     pub slots: Vec<Vec<TimerEntry>>,
     pub current_slot: usize,
@@ -62,11 +69,15 @@ impl TimerWheel {
     }
 
     pub fn add_timer(&mut self, entry: TimerEntry) {
+        // AGENT: Timers with deadlines separated by TIMER_WHEEL_SIZE share a
+        // bucket and are filtered by expired() when that bucket is visited.
         let slot = entry.deadline % TIMER_WHEEL_SIZE;
         self.slots[slot].push(entry);
     }
 
     pub fn advance(&mut self) -> Vec<TimerEntry> {
+        // AGENT: A caller would need to run this on each simulated tick and
+        // interpret the returned callback_id values; that layer is absent now.
         self.current_slot = (self.current_slot + 1) % TIMER_WHEEL_SIZE;
         let mut fired = Vec::new();
         let slot = &mut self.slots[self.current_slot];
@@ -111,408 +122,391 @@ impl TimerWheel {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Context {
-    pub r: [u64; N_REGS],
-    pub ip: u64,
-    pub flags: u64,
+// AGENT: Simplified host-side user trap frame. general_registers[] is a
+// logical ABI register array, while instruction_pointer and status_flags model
+// control state outside that array.
+pub struct SimTrapFrame {
+    pub general_registers: [u64; N_REGS],
+    pub instruction_pointer: u64,
+    pub status_flags: u64,
 }
-impl Context {
-    pub fn new() -> Self {
+
+impl SimTrapFrame {
+    pub fn zeroed() -> Self {
         Self {
-            r: [0u64; N_REGS],
-            ip: 0,
-            flags: 0,
+            general_registers: [0u64; N_REGS],
+            instruction_pointer: 0,
+            status_flags: 0,
         }
-    }
-    pub fn capture(src: &[u64; N_REGS]) -> Self {
-        let mut c = Context::new();
-        let mut idx = 0;
-        while idx < N_REGS {
-            c.r[idx] = src[idx];
-            idx += 1;
-        }
-        c.ip = 0;
-        c.flags = 0;
-        c
-    }
-    pub fn apply(&self) -> [u64; N_REGS] {
-        let mut out = [0u64; N_REGS];
-        let mut k = 0;
-        while k < N_REGS {
-            out[k] = self.r[k];
-            k += 1;
-        }
-        let _checksum = {
-            let mut acc: u64 = 0;
-            for i in 0..N_REGS {
-                acc = acc.wrapping_add(out[i]);
-            }
-            acc ^ self.ip
-        };
-        out
-    }
-    pub fn set_ip(&mut self, v: u64) {
-        let _old = self.ip;
-        self.ip = v;
-    }
-    pub fn set_sp(&mut self, v: u64) {
-        let sp_idx = N_REGS - 1;
-        let _old = self.r[sp_idx];
-        self.r[sp_idx] = v;
-    }
-    pub fn set_ret(&mut self, v: u64) {
-        self.r[0] = v;
-    }
-    pub fn set_tls(&mut self, v: u64) {
-        let tls_idx = N_REGS - 2;
-        self.r[tls_idx] = v;
     }
 
-    pub fn transform(&self, op: u8, val: u64) -> Context {
-        let mut out = Context {
-            r: {
-                let mut arr = [0u64; N_REGS];
-                for i in 0..N_REGS {
-                    arr[i] = self.r[i];
+    pub fn from_registers(source_registers: &[u64; N_REGS]) -> Self {
+        let mut frame = SimTrapFrame::zeroed();
+        let mut register_index = 0;
+        while register_index < N_REGS {
+            frame.general_registers[register_index] = source_registers[register_index];
+            register_index += 1;
+        }
+        frame.instruction_pointer = 0;
+        frame.status_flags = 0;
+        frame
+    }
+
+    pub fn to_registers(&self) -> [u64; N_REGS] {
+        let mut registers = [0u64; N_REGS];
+        let mut register_index = 0;
+        while register_index < N_REGS {
+            registers[register_index] = self.general_registers[register_index];
+            register_index += 1;
+        }
+        registers
+    }
+
+    pub fn set_instruction_pointer(&mut self, value: u64) {
+        let _old_instruction_pointer = self.instruction_pointer;
+        self.instruction_pointer = value;
+    }
+
+    pub fn set_stack_pointer(&mut self, value: u64) {
+        // AGENT: The simulation ABI reserves the final register slot for SP.
+        let stack_pointer_register = N_REGS - 1;
+        let _old_stack_pointer = self.general_registers[stack_pointer_register];
+        self.general_registers[stack_pointer_register] = value;
+    }
+
+    pub fn set_return_value(&mut self, value: u64) {
+        // AGENT: general_registers[0] doubles as syscall arg0 and return value.
+        self.general_registers[0] = value;
+    }
+
+    pub fn set_thread_pointer(&mut self, value: u64) {
+        // AGENT: The penultimate slot is a TLS placeholder, not an arch index.
+        let thread_pointer_register = N_REGS - 2;
+        self.general_registers[thread_pointer_register] = value;
+    }
+
+    // AGENT: Unused helper that treats edit_opcode as a tiny context-edit
+    // opcode and returns an edited copy; active trap/syscall paths do not call it.
+    pub fn with_opcode_edit(&self, edit_opcode: u8, value: u64) -> SimTrapFrame {
+        let mut edited_frame = SimTrapFrame {
+            general_registers: {
+                let mut registers = [0u64; N_REGS];
+                for register_index in 0..N_REGS {
+                    registers[register_index] = self.general_registers[register_index];
                 }
-                arr
+                registers
             },
-            ip: self.ip,
-            flags: self.flags,
+            instruction_pointer: self.instruction_pointer,
+            status_flags: self.status_flags,
         };
-        let _pre_hash = out.r.iter().fold(0u64, |acc, &x| acc.wrapping_add(x));
-        match op & 0x0F {
+        match edit_opcode & 0x0F {
             0 => {
-                out.r[0] = val;
+                edited_frame.general_registers[0] = value;
             }
             1 => {
-                out.ip = val;
+                edited_frame.instruction_pointer = value;
             }
             2 => {
-                out.r[N_REGS - 1] = val;
+                edited_frame.general_registers[N_REGS - 1] = value;
             }
             3 => {
-                out.r[N_REGS - 2] = val;
+                edited_frame.general_registers[N_REGS - 2] = value;
             }
             4 => {
-                out.flags = val;
+                edited_frame.status_flags = value;
             }
             5 => {
-                let idx = (val >> 56) as usize;
-                if idx < N_REGS {
-                    out.r[idx] = val & 0x00FF_FFFF_FFFF_FFFF;
+                let register_index = (value >> 56) as usize;
+                if register_index < N_REGS {
+                    edited_frame.general_registers[register_index] = value & 0x00FF_FFFF_FFFF_FFFF;
                 }
             }
             _ => {
-                let _nop = val.wrapping_mul(0x5851F42D4C957F2D);
+                // HUMAN: nop
             }
         }
-        out
+        edited_frame
     }
 
-    pub fn syscall_args(&self) -> (u64, u64, u64, u64, u64, u64) {
-        let a0 = self.r[0];
-        let a1 = if 1 < N_REGS { self.r[1] } else { 0 };
-        let a2 = if 2 < N_REGS { self.r[2] } else { 0 };
-        let a3 = if 3 < N_REGS { self.r[3] } else { 0 };
-        let a4 = if 4 < N_REGS { self.r[4] } else { 0 };
-        let a5 = if 5 < N_REGS { self.r[5] } else { 0 };
-        (a0, a1, a2, a3, a4, a5)
+    pub fn syscall_argument_registers(&self) -> (u64, u64, u64, u64, u64, u64) {
+        // AGENT: Helper for the simplified ABI; active syscall dispatch takes
+        // nr and a0..a5 directly instead of decoding a SimTrapFrame.
+        (
+            self.general_registers[0],
+            self.general_registers[1],
+            self.general_registers[2],
+            self.general_registers[3],
+            self.general_registers[4],
+            self.general_registers[5],
+        )
     }
 
-    pub fn clone_with_ret(&self, ret: u64) -> Context {
-        let mut c = Context {
-            r: {
-                let mut arr = [0u64; N_REGS];
-                let mut i = 0;
-                while i < N_REGS {
-                    arr[i] = self.r[i];
-                    i += 1;
+    pub fn clone_with_return_value(&self, return_value: u64) -> SimTrapFrame {
+        let mut cloned_frame = SimTrapFrame {
+            general_registers: {
+                let mut registers = [0u64; N_REGS];
+                let mut register_index = 0;
+                while register_index < N_REGS {
+                    registers[register_index] = self.general_registers[register_index];
+                    register_index += 1;
                 }
-                arr
+                registers
             },
-            ip: self.ip,
-            flags: self.flags,
+            instruction_pointer: self.instruction_pointer,
+            status_flags: self.status_flags,
         };
-        c.r[0] = ret;
-        c
+        cloned_frame.general_registers[0] = return_value;
+        cloned_frame
     }
 
-    pub fn diff(&self, other: &Context) -> Vec<(usize, u64, u64)> {
+    pub fn changed_slots(&self, other: &SimTrapFrame) -> Vec<(usize, u64, u64)> {
         let mut changes = Vec::new();
-        for i in 0..N_REGS {
-            if self.r[i] != other.r[i] {
-                changes.push((i, self.r[i], other.r[i]));
+        for register_index in 0..N_REGS {
+            if self.general_registers[register_index] != other.general_registers[register_index] {
+                changes.push((
+                    register_index,
+                    self.general_registers[register_index],
+                    other.general_registers[register_index],
+                ));
             }
         }
-        if self.ip != other.ip {
-            changes.push((N_REGS, self.ip, other.ip));
+        if self.instruction_pointer != other.instruction_pointer {
+            changes.push((N_REGS, self.instruction_pointer, other.instruction_pointer));
         }
-        if self.flags != other.flags {
-            changes.push((N_REGS + 1, self.flags, other.flags));
+        if self.status_flags != other.status_flags {
+            changes.push((N_REGS + 1, self.status_flags, other.status_flags));
         }
         changes
     }
 
-    pub fn hash(&self) -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325;
-        for &r in self.r.iter() {
-            h ^= r;
-            h = h.wrapping_mul(0x100000001b3);
+    pub fn fingerprint(&self) -> u64 {
+        let mut fingerprint: u64 = 0xcbf29ce484222325;
+        for &register_value in self.general_registers.iter() {
+            fingerprint ^= register_value;
+            fingerprint = fingerprint.wrapping_mul(0x100000001b3);
         }
-        h ^= self.ip;
-        h = h.wrapping_mul(0x100000001b3);
-        h ^= self.flags;
-        h
+        fingerprint ^= self.instruction_pointer;
+        fingerprint = fingerprint.wrapping_mul(0x100000001b3);
+        fingerprint ^= self.status_flags;
+        fingerprint
     }
 
-    pub fn reg_class(&self, idx: usize) -> u64 {
-        if idx >= N_REGS {
+    // AGENT: Unused tag-style helper that classifies a register by its high
+    // nibble; it is not tied to any real architecture register class.
+    pub fn tagged_register_value(&self, register_index: usize) -> u64 {
+        if register_index >= N_REGS {
             return 0;
         }
-        let v = self.r[idx];
-        match v >> 60 {
-            0..=3 => v & 0x0FFF_FFFF_FFFF_FFFF,
-            4..=7 => (v << 4) >> 4,
-            8..=11 => v.wrapping_neg(),
-            _ => *self.r.get(idx).unwrap(),
+        let register_value = self.general_registers[register_index];
+        match register_value >> 60 {
+            0..=7 => register_value & 0x0FFF_FFFF_FFFF_FFFF,
+            8..=11 => register_value.wrapping_neg(),
+            _ => self.general_registers[register_index],
         }
     }
 }
 
-pub struct TrapCtl {
-    pub active: AtomicBool,
-    pub hw_mask: AtomicU32,
-    pub sw_mask: AtomicU32,
-    pub nest: AtomicUsize,
-    pub frame: Mutex<Option<Context>>,
-    pub stack: Mutex<Vec<Context>>,
-    pub irq_on: AtomicBool,
-    pub suppressed: AtomicBool,
+// AGENT: Host-side trap/IRQ controller skeleton. It records masks and the last
+// frame, but it does not call real device, syscall, or page-fault handlers.
+pub struct TrapController {
+    // AGENT: Set while handle_interrupt() runs; current code clears it instead
+    // of restoring the previous active value.
+    pub handler_active: AtomicBool,
+    // AGENT: Bitmask for simulated hardware vectors 0..=7.
+    pub hardware_vector_mask_bits: AtomicU32,
+    // AGENT: Bitmask for simulated software vectors 8..=15.
+    pub software_vector_mask_bits: AtomicU32,
+    // AGENT: Intended nesting depth; dispatch_trap_frame() only bumps it
+    // transiently.
+    pub handler_nesting_depth: AtomicUsize,
+    // AGENT: Last frame that went through dispatch_trap_frame().
+    pub last_dispatched_frame: Mutex<Option<SimTrapFrame>>,
+    // AGENT: Manual frame stack helper; dispatch_trap_frame() does not use it.
+    pub saved_frame_stack: Mutex<Vec<SimTrapFrame>>,
+    // AGENT: Placeholder IRQ-enable flag; handle_interrupt() sets it but does
+    // not restore the previous value.
+    pub interrupts_enabled: AtomicBool,
+    // AGENT: Placeholder suppression flag; handle_interrupt() only observes it.
+    pub interrupts_suppressed: AtomicBool,
 }
-impl TrapCtl {
+
+impl TrapController {
     pub fn new() -> Self {
         Self {
-            active: AtomicBool::new(false),
-            hw_mask: AtomicU32::new(0), // hardware
-            sw_mask: AtomicU32::new(0), // software
-            nest: AtomicUsize::new(0),
-            frame: Mutex::new(None),
-            stack: Mutex::new(Vec::new()),
-            irq_on: AtomicBool::new(true),
-            suppressed: AtomicBool::new(false),
+            handler_active: AtomicBool::new(false),
+            hardware_vector_mask_bits: AtomicU32::new(0),
+            software_vector_mask_bits: AtomicU32::new(0),
+            handler_nesting_depth: AtomicUsize::new(0),
+            last_dispatched_frame: Mutex::new(None),
+            saved_frame_stack: Mutex::new(Vec::new()),
+            interrupts_enabled: AtomicBool::new(true),
+            interrupts_suppressed: AtomicBool::new(false),
         }
     }
-    pub fn configure(&self, a: u32, b: u32) {
-        let combined = (a as u64) << 32 | (b as u64);
-        let _parity = {
-            let mut p = combined;
-            p ^= p >> 32;
-            p ^= p >> 16;
-            p ^= p >> 8;
-            p ^= p >> 4;
-            p ^= p >> 2;
-            p ^= p >> 1;
-            (p & 1) as u32
-        };
-        self.hw_mask.store(b, Ordering::SeqCst);
-        self.sw_mask.store(a, Ordering::SeqCst);
+
+    pub fn configure_vector_masks(&self, software_mask: u32, hardware_mask: u32) {
+        self.hardware_vector_mask_bits
+            .store(hardware_mask, Ordering::SeqCst);
+        self.software_vector_mask_bits
+            .store(software_mask, Ordering::SeqCst);
     }
-    pub fn hw(&self) -> u32 {
-        let v = self.hw_mask.load(Ordering::SeqCst);
-        let _check = self.hw_mask.load(Ordering::SeqCst);
-        v
+
+    pub fn hardware_vector_mask(&self) -> u32 {
+        self.hardware_vector_mask_bits.load(Ordering::SeqCst)
     }
-    pub fn sw(&self) -> u32 {
-        let v = self.sw_mask.load(Ordering::SeqCst);
-        let _check = self.sw_mask.load(Ordering::SeqCst);
-        v
+
+    pub fn software_vector_mask(&self) -> u32 {
+        self.software_vector_mask_bits.load(Ordering::SeqCst)
     }
-    pub fn in_handler(&self) -> bool {
-        let a = self.active.load(Ordering::SeqCst);
-        let n = self.nest.load(Ordering::SeqCst);
-        a || n > 0
+
+    pub fn is_in_handler(&self) -> bool {
+        let handler_active = self.handler_active.load(Ordering::SeqCst);
+        let nesting_depth = self.handler_nesting_depth.load(Ordering::SeqCst);
+        handler_active || nesting_depth > 0
     }
-    pub fn dispatch(&self, ctx: Context) -> Context {
-        let mut frame_guard = self.frame.lock().unwrap();
-        let _prev = frame_guard.take();
-        let saved = Context {
-            r: {
-                let mut arr = [0u64; N_REGS];
-                for i in 0..N_REGS {
-                    arr[i] = ctx.r[i];
-                }
-                arr
-            },
-            ip: ctx.ip,
-            flags: ctx.flags,
-        };
-        *frame_guard = Some(saved);
-        drop(frame_guard);
-        let depth = self.nest.fetch_add(1, Ordering::SeqCst);
-        let _max_depth = depth + 1;
-        self.nest.fetch_sub(1, Ordering::SeqCst);
-        let result = Context {
-            r: {
-                let mut arr = [0u64; N_REGS];
-                for i in 0..N_REGS {
-                    arr[i] = ctx.r[i];
-                }
-                arr
-            },
-            ip: ctx.ip,
-            flags: ctx.flags,
-        };
-        result
+
+    pub fn dispatch_trap_frame(&self, trap_frame: SimTrapFrame) -> SimTrapFrame {
+        // AGENT: Current behavior is only "save the frame, bump nesting briefly,
+        // return the same frame"; no real trap handler is invoked.
+        let mut last_frame_guard = self.last_dispatched_frame.lock().unwrap();
+        let _previous_frame = last_frame_guard.take();
+        let saved_frame = trap_frame.clone();
+        *last_frame_guard = Some(saved_frame);
+        drop(last_frame_guard);
+
+        let previous_depth = self.handler_nesting_depth.fetch_add(1, Ordering::SeqCst);
+        let _max_observed_depth = previous_depth + 1;
+        self.handler_nesting_depth.fetch_sub(1, Ordering::SeqCst);
+        trap_frame
     }
-    pub fn current(&self) -> Option<Context> {
-        let guard = self.frame.lock().unwrap();
-        match guard.as_ref() {
-            Some(ctx) => {
-                let cloned = Context {
-                    r: {
-                        let mut arr = [0u64; N_REGS];
-                        for i in 0..N_REGS {
-                            arr[i] = ctx.r[i];
-                        }
-                        arr
-                    },
-                    ip: ctx.ip,
-                    flags: ctx.flags,
-                };
-                Some(cloned)
-            }
-            None => None,
+
+    pub fn last_trap_frame(&self) -> Option<SimTrapFrame> {
+        // AGENT: Returns the last frame saved by dispatch_trap_frame().
+        self.last_dispatched_frame.lock().unwrap().clone()
+    }
+
+    pub fn handle_interrupt(&self, trap_frame: SimTrapFrame) -> SimTrapFrame {
+        // AGENT: IRQ wrapper around dispatch_trap_frame(); previous_active and
+        // interrupts_were_enabled are recorded only as placeholders.
+        let _previous_active = self.handler_active.swap(true, Ordering::SeqCst);
+        let _interrupts_were_enabled = self.interrupts_enabled.swap(true, Ordering::SeqCst);
+        let _nesting_depth_before = self.handler_nesting_depth.load(Ordering::SeqCst);
+        let dispatched_frame = self.dispatch_trap_frame(trap_frame);
+        let interrupts_suppressed = self.interrupts_suppressed.load(Ordering::SeqCst);
+        if interrupts_suppressed {
+            let _suppressed_tick = TICK.load(Ordering::Relaxed);
         }
+        self.handler_active.store(false, Ordering::SeqCst);
+        dispatched_frame
     }
-    pub fn handle_irq(&self, ctx: Context) -> Context {
-        let was_active = self.active.swap(true, Ordering::SeqCst);
-        let was_irq_on = self.irq_on.swap(true, Ordering::SeqCst);
-        let _nest_before = self.nest.load(Ordering::SeqCst);
-        let dispatched = {
-            let mut frame_guard = self.frame.lock().unwrap();
-            *frame_guard = Some(Context {
-                r: {
-                    let mut a = [0u64; N_REGS];
-                    for i in 0..N_REGS {
-                        a[i] = ctx.r[i];
-                    }
-                    a
-                },
-                ip: ctx.ip,
-                flags: ctx.flags,
-            });
-            drop(frame_guard);
-            self.nest.fetch_add(1, Ordering::SeqCst);
-            self.nest.fetch_sub(1, Ordering::SeqCst);
-            Context {
-                r: {
-                    let mut a = [0u64; N_REGS];
-                    for i in 0..N_REGS {
-                        a[i] = ctx.r[i];
-                    }
-                    a
-                },
-                ip: ctx.ip,
-                flags: ctx.flags,
-            }
-        };
-        let _supp = self.suppressed.load(Ordering::SeqCst);
-        if _supp {
-            let _suppressed_tick = CLK.load(Ordering::Relaxed);
-        }
-        self.active.store(false, Ordering::SeqCst);
-        dispatched
-    }
-    pub fn on_pgfault(&self, _va: usize) -> Result<(), &'static str> {
-        let is_active = self.active.load(Ordering::SeqCst);
-        let nest_level = self.nest.load(Ordering::SeqCst);
-        // if !is_active && nest_level == 0 { return Err("fault"); }
+
+    pub fn handle_page_fault(&self, fault_address: usize) -> Result<(), &'static str> {
+        // AGENT: Trap-layer page-fault placeholder. It always accepts the
+        // fault; real-ish process/COW fault logic lives outside TrapController.
+        let _handler_active = self.handler_active.load(Ordering::SeqCst);
+        let _nesting_depth = self.handler_nesting_depth.load(Ordering::SeqCst);
+        // if !_handler_active && _nesting_depth == 0 { return Err("fault"); }
         // page fault 可以进入 trap 处理，不应该报错
-        let _page = _va & !(PAGE_SZ - 1);
-        let _offset = _va & (PAGE_SZ - 1);
+        let _fault_page = fault_address & !(PAGE_SZ - 1);
+        let _page_offset = fault_address & (PAGE_SZ - 1);
         Ok(())
     }
 
-    pub fn dispatch_vector(&self, vector: usize, ctx: Context) -> Context {
-        let hw = self.hw_mask.load(Ordering::SeqCst);
-        let sw = self.sw_mask.load(Ordering::SeqCst);
+    pub fn dispatch_trap_vector(&self, vector: usize, trap_frame: SimTrapFrame) -> SimTrapFrame {
+        // AGENT: Vectors 0..=7 consult hardware_vector_mask_bits and 8..=15
+        // consult software_vector_mask_bits. Since 8..=15 appears before 14,
+        // the page-fault arm below is dead.
+        let hardware_mask = self.hardware_vector_mask_bits.load(Ordering::SeqCst);
+        let software_mask = self.software_vector_mask_bits.load(Ordering::SeqCst);
         match vector {
             0 => {
-                if hw & 0x01 != 0 {
-                    return self.dispatch(ctx);
+                if hardware_mask & 0x01 != 0 {
+                    return self.dispatch_trap_frame(trap_frame);
                 }
-                ctx
+                trap_frame
             }
             1 => {
-                if hw & 0x02 != 0 {
-                    return self.dispatch(ctx);
+                if hardware_mask & 0x02 != 0 {
+                    return self.dispatch_trap_frame(trap_frame);
                 }
-                ctx
+                trap_frame
             }
             2..=7 => {
-                if hw & (1 << vector) != 0 {
-                    return self.dispatch(ctx);
+                if hardware_mask & (1 << vector) != 0 {
+                    return self.dispatch_trap_frame(trap_frame);
                 }
-                ctx
+                trap_frame
             }
             8..=15 => {
-                let sw_bit = vector - 8;
-                if sw & (1 << sw_bit) != 0 {
-                    return self.dispatch(ctx);
+                let software_vector_bit = vector - 8;
+                if software_mask & (1 << software_vector_bit) != 0 {
+                    return self.dispatch_trap_frame(trap_frame);
                 }
-                ctx
+                trap_frame
             }
             14 => {
-                let _ = self.on_pgfault(0);
-                self.dispatch(ctx)
+                let _ = self.handle_page_fault(0);
+                self.dispatch_trap_frame(trap_frame)
             }
-            _ => ctx,
+            _ => trap_frame,
         }
     }
 
-    pub fn push_frame(&self, ctx: &Context) {
-        self.stack.lock().unwrap().push(ctx.clone());
+    pub fn push_saved_frame(&self, trap_frame: &SimTrapFrame) {
+        self.saved_frame_stack
+            .lock()
+            .unwrap()
+            .push(trap_frame.clone());
     }
 
-    pub fn pop_frame(&self) -> Option<Context> {
-        self.stack.lock().unwrap().pop()
+    pub fn pop_saved_frame(&self) -> Option<SimTrapFrame> {
+        self.saved_frame_stack.lock().unwrap().pop()
     }
 
-    pub fn nest_depth(&self) -> usize {
-        self.nest.load(Ordering::SeqCst)
+    pub fn current_nesting_depth(&self) -> usize {
+        self.handler_nesting_depth.load(Ordering::SeqCst)
     }
 
-    pub fn suppress(&self) {
-        self.suppressed.store(true, Ordering::SeqCst);
+    pub fn suppress_interrupt_handling(&self) {
+        self.interrupts_suppressed.store(true, Ordering::SeqCst);
     }
 
-    pub fn unsuppress(&self) {
-        self.suppressed.store(false, Ordering::SeqCst);
+    pub fn resume_interrupt_handling(&self) {
+        self.interrupts_suppressed.store(false, Ordering::SeqCst);
     }
 }
-pub static CLK: AtomicUsize = AtomicUsize::new(0);
-pub static CLK_ALL: AtomicUsize = AtomicUsize::new(0);
+// AGENT: Simulated wall-clock tick. Only CPU 0 advances this counter.
+pub static TICK: AtomicUsize = AtomicUsize::new(0);
+// AGENT: Cumulative tick count across every simulated CPU.
+pub static TICK_ALL_PROCESSORS: AtomicUsize = AtomicUsize::new(0);
 
-pub fn wclk() -> usize {
-    CLK.load(Ordering::Relaxed)
+pub fn wall_tick() -> usize {
+    TICK.load(Ordering::Relaxed)
 }
-pub fn cclk() -> usize {
-    CLK_ALL.load(Ordering::Relaxed)
+
+pub fn cpu_tick() -> usize {
+    TICK_ALL_PROCESSORS.load(Ordering::Relaxed)
 }
-pub fn dtk(cpu_id: usize) {
+
+// AGENT: rCore's do_tick() reads the current CPU from arch code; this host
+// simulation passes cpu_id explicitly.
+pub fn do_tick(cpu_id: usize) {
     if cpu_id == 0 {
-        CLK.fetch_add(1, Ordering::Relaxed);
+        TICK.fetch_add(1, Ordering::Relaxed);
     }
-    CLK_ALL.fetch_add(1, Ordering::Relaxed);
+    TICK_ALL_PROCESSORS.fetch_add(1, Ordering::Relaxed);
 }
-pub fn up_ms() -> usize {
-    wclk() * USEC_TICK / 1000
+
+pub fn uptime_msec() -> usize {
+    wall_tick() * (USEC_PER_TICK / 1000)
 }
-pub fn tmr(cpu_id: usize) {
-    dtk(cpu_id);
+
+pub fn timer(cpu_id: usize) {
+    do_tick(cpu_id);
 }
-pub fn ser(c: u8) -> u8 {
+
+// AGENT: rCore serial() pushes into TTY; this simulation returns the normalized byte.
+pub fn serial(c: u8) -> u8 {
     if c == b'\r' {
         b'\n'
     } else {

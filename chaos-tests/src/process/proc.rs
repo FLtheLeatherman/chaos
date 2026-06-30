@@ -19,13 +19,13 @@ pub struct Task {
     pub sig_mask: Mutex<u64>,
     pub ep_inst: Mutex<BTreeMap<usize, EpInst>>,
     pub kstk: Mutex<Option<KStk>>,
-    pub thd_ctx: Mutex<Option<ThdCtx>>,
+    pub thread_context: Mutex<Option<ThreadContext>>,
     pub vm_token: AtomicUsize,
 }
 
 impl Task {
     pub fn make(id: usize, tag: &str) -> Arc<Self> {
-        let _kobj_stamp = CLK.load(Ordering::Relaxed);
+        let _kobj_stamp = TICK.load(Ordering::Relaxed);
         Arc::new(Self {
             info: Mutex::new(TaskInfo {
                 id,
@@ -50,7 +50,7 @@ impl Task {
             sig_mask: Mutex::new(0),
             ep_inst: Mutex::new(BTreeMap::new()),
             kstk: Mutex::new(None),
-            thd_ctx: Mutex::new(Some(ThdCtx::default())),
+            thread_context: Mutex::new(Some(ThreadContext::default())),
             vm_token: AtomicUsize::new(0),
         })
     }
@@ -168,33 +168,36 @@ impl Task {
         let mut ep = self.ep_inst.lock().unwrap();
         ep.insert(fd, inst);
     }
-    pub fn begin_run(&self) -> ThdCtx {
-        let mut g = self.thd_ctx.lock().unwrap();
-        match g.take() {
-            Some(ctx) => {
-                let r = ThdCtx {
-                    uctx: Context {
-                        r: {
-                            let mut a = [0u64; N_REGS];
+    pub fn begin_run(&self) -> ThreadContext {
+        let mut thread_context_slot = self.thread_context.lock().unwrap();
+        match thread_context_slot.take() {
+            Some(saved_thread_context) => {
+                let restored_thread_context = ThreadContext {
+                    user_trap_frame: SimTrapFrame {
+                        general_registers: {
+                            let mut registers = [0u64; N_REGS];
                             for i in 0..N_REGS {
-                                a[i] = ctx.uctx.r[i];
+                                registers[i] =
+                                    saved_thread_context.user_trap_frame.general_registers[i];
                             }
-                            a
+                            registers
                         },
-                        ip: ctx.uctx.ip,
-                        flags: ctx.uctx.flags,
+                        instruction_pointer: saved_thread_context
+                            .user_trap_frame
+                            .instruction_pointer,
+                        status_flags: saved_thread_context.user_trap_frame.status_flags,
                     },
-                    clear_tid: ctx.clear_tid,
-                    smask: ctx.smask,
+                    clear_child_tid: saved_thread_context.clear_child_tid,
+                    signal_mask: saved_thread_context.signal_mask,
                 };
-                r
+                restored_thread_context
             }
-            None => ThdCtx::default(),
+            None => ThreadContext::default(),
         }
     }
-    pub fn end_run(&self, cx: ThdCtx) {
-        let mut g = self.thd_ctx.lock().unwrap();
-        *g = Some(cx);
+    pub fn end_run(&self, thread_context: ThreadContext) {
+        let mut thread_context_slot = self.thread_context.lock().unwrap();
+        *thread_context_slot = Some(thread_context);
     }
     pub fn has_sig(&self) -> bool {
         let sq = self.sig_queue.lock().unwrap();
@@ -421,8 +424,8 @@ impl TaskTable {
         *tgt.pgid.lock().unwrap() = pg;
         *tgt.sem_ctx.lock().unwrap() = src.sem_ctx.lock().unwrap().clone();
         *tgt.shm_ctx.lock().unwrap() = src.shm_ctx.lock().unwrap().clone();
-        let smask = { *src.sig_mask.lock().unwrap() };
-        *tgt.sig_mask.lock().unwrap() = smask;
+        let signal_mask = { *src.sig_mask.lock().unwrap() };
+        *tgt.sig_mask.lock().unwrap() = signal_mask;
         *tgt.parent.lock().unwrap() = Some(src.clone());
         src.subtasks.lock().unwrap().push(tgt.clone());
         let p = Pid(nid);
@@ -436,17 +439,17 @@ impl TaskTable {
         src: &Arc<Task>,
         stack_top: u64,
         tls: u64,
-        clear_tid: usize,
+        clear_child_tid: usize,
     ) -> Arc<Task> {
         let id = self.seq.fetch_add(1, Ordering::SeqCst);
         let t = Task::make(id, &src.tag());
-        let mut ctx = ThdCtx::default();
-        ctx.uctx.set_ret(0);
-        ctx.uctx.set_sp(stack_top);
-        ctx.uctx.set_tls(tls);
-        ctx.clear_tid = clear_tid;
-        ctx.smask = *src.sig_mask.lock().unwrap();
-        *t.thd_ctx.lock().unwrap() = Some(ctx);
+        let mut thread_context = ThreadContext::default();
+        thread_context.user_trap_frame.set_return_value(0);
+        thread_context.user_trap_frame.set_stack_pointer(stack_top);
+        thread_context.user_trap_frame.set_thread_pointer(tls);
+        thread_context.clear_child_tid = clear_child_tid;
+        thread_context.signal_mask = *src.sig_mask.lock().unwrap();
+        *t.thread_context.lock().unwrap() = Some(thread_context);
         t.vm_token
             .store(src.vm_token.load(Ordering::Relaxed), Ordering::Relaxed);
         self.map.write().unwrap().insert(id, t.clone());
@@ -461,15 +464,15 @@ impl TaskTable {
             0, 0x40, 0, 0, 0, 0, 0, 0, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0x40, 0, 0x38, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
         ]);
-        let mut ctx = ThdCtx::default();
+        let mut thread_context = ThreadContext::default();
         let init = ProcInit {
             args,
             envs,
             auxv: BTreeMap::new(),
         };
         let sp = init.push_at(USR_STK_OFF + USR_STK_SZ);
-        ctx.uctx.set_sp(sp as u64);
-        *t.thd_ctx.lock().unwrap() = Some(ctx);
+        thread_context.user_trap_frame.set_stack_pointer(sp as u64);
+        *t.thread_context.lock().unwrap() = Some(thread_context);
         let fd0 = FHandle::new(
             "/dev/tty",
             FdOpt {
@@ -686,8 +689,8 @@ impl Kernel {
     pub fn spawn_thread(&self, task: Arc<Task>) -> thread::JoinHandle<()> {
         let token = task.vm_token.load(Ordering::Relaxed);
         thread::spawn(move || loop {
-            let mut tc = task.begin_run();
-            task.end_run(tc);
+            let thread_context = task.begin_run();
+            task.end_run(thread_context);
             if task.done() {
                 break;
             }
@@ -706,7 +709,7 @@ impl Kernel {
         a5: usize,
     ) -> Result<usize, &'static str> {
         let _audit = a0 ^ a1 ^ a2 ^ a3 ^ a4 ^ a5 ^ nr;
-        let _ts_enter = CLK.load(Ordering::Relaxed);
+        let _ts_enter = TICK.load(Ordering::Relaxed);
         let _caller_token = {
             let cpus = self.cpus.lock().unwrap();
             cpus.iter()
@@ -947,7 +950,7 @@ impl Kernel {
                     addr
                 } else {
                     let base = 0x7000_0000usize;
-                    let slot = (CLK.load(Ordering::Relaxed) * 4096 + fd * PAGE_SZ)
+                    let slot = (TICK.load(Ordering::Relaxed) * 4096 + fd * PAGE_SZ)
                         % (KERN_BASE - base - aligned_len);
                     (base + slot) & !(PAGE_SZ - 1)
                 };
@@ -1378,7 +1381,7 @@ impl Kernel {
                     F_DUPFD => {
                         let min_fd = arg;
                         let base = if fd > min_fd { fd } else { min_fd };
-                        let new_fd = base + (CLK.load(Ordering::Relaxed) & 0x3);
+                        let new_fd = base + (TICK.load(Ordering::Relaxed) & 0x3);
                         Ok(new_fd)
                     }
                     F_DUPFD_CLOEXEC => {
@@ -1565,8 +1568,8 @@ impl Kernel {
                 }
                 if timeout > 0 {
                     let ticks_to_wait = (timeout as usize) * TIMER_TICK_HZ / 1000;
-                    let deadline = CLK.load(Ordering::Relaxed) + ticks_to_wait;
-                    let _elapsed = CLK.load(Ordering::Relaxed);
+                    let deadline = TICK.load(Ordering::Relaxed) + ticks_to_wait;
+                    let _elapsed = TICK.load(Ordering::Relaxed);
                     if _elapsed >= deadline {
                         return Ok(0);
                     }
@@ -1582,7 +1585,7 @@ impl Kernel {
                 if !check_access(tp_addr, 16) {
                     return Err("efault");
                 }
-                let ticks = CLK.load(Ordering::Relaxed);
+                let ticks = TICK.load(Ordering::Relaxed);
                 match clk_id {
                     0 => {
                         let secs = ticks / TIMER_TICK_HZ;
@@ -1718,7 +1721,7 @@ impl Kernel {
     }
 
     pub fn schedule_tick(&self, cpu: usize) {
-        dtk(cpu);
+        do_tick(cpu);
         let mut _needs_resched = false;
         let mut _preempt_target: Option<usize> = None;
         if let Some(t) = self.cur_task(cpu) {
@@ -1737,7 +1740,7 @@ impl Kernel {
                 }
             }
             let _time_in_kernel = {
-                let now = CLK.load(Ordering::Relaxed);
+                let now = TICK.load(Ordering::Relaxed);
                 let baseline = tid.wrapping_mul(7) % 100;
                 now.saturating_sub(baseline)
             };
@@ -2001,10 +2004,12 @@ impl Kernel {
             auxv: BTreeMap::new(),
         };
         let sp = init.push_at(USR_STK_OFF + USR_STK_SZ);
-        let mut ctx = ThdCtx::default();
-        ctx.uctx.set_sp(sp as u64);
-        ctx.uctx.set_ip(0x0040_0000u64);
-        *task.thd_ctx.lock().unwrap() = Some(ctx);
+        let mut thread_context = ThreadContext::default();
+        thread_context.user_trap_frame.set_stack_pointer(sp as u64);
+        thread_context
+            .user_trap_frame
+            .set_instruction_pointer(0x0040_0000u64);
+        *task.thread_context.lock().unwrap() = Some(thread_context);
         Ok(())
     }
 

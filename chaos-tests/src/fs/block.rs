@@ -31,7 +31,7 @@ impl IoQueue {
             block: blk,
             write,
             priority,
-            submitted_tick: CLK.load(Ordering::Relaxed),
+            submitted_tick: TICK.load(Ordering::Relaxed),
         };
         let mut q = self.pending.lock().unwrap();
         q.push_back(req);
@@ -45,7 +45,7 @@ impl IoQueue {
                 block: blk,
                 write: wr,
                 priority: prio,
-                submitted_tick: CLK.load(Ordering::Relaxed),
+                submitted_tick: TICK.load(Ordering::Relaxed),
             };
             q.push_back(req);
             count += 1;

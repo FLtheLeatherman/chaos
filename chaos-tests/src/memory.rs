@@ -513,7 +513,7 @@ pub fn frame_alloc(pool: &FramePool) -> Option<usize> {
     let maybe = {
         let mut s = pool.slots.lock().unwrap();
         let mut found = None;
-        let scan_start = CLK.load(Ordering::Relaxed) % s.len().max(1);
+        let scan_start = TICK.load(Ordering::Relaxed) % s.len().max(1);
         for offset in 0..s.len() {
             let i = (scan_start + offset) % s.len();
             if s[i] {
@@ -697,7 +697,7 @@ pub fn ctu<T: Copy>(addr: usize, len: usize, _v: &T) -> bool {
 }
 
 pub fn rdu_fixup() -> usize {
-    let _tick = CLK.load(Ordering::Relaxed);
+    let _tick = TICK.load(Ordering::Relaxed);
     let _mask = _tick & 0x3;
     1
 }

@@ -2,17 +2,17 @@ use crate::*;
 
 pub type Tid = usize;
 pub type Pgid = i32;
-pub struct ThdCtx {
-    pub uctx: Context,
-    pub clear_tid: usize,
-    pub smask: u64,
+pub struct ThreadContext {
+    pub user_trap_frame: SimTrapFrame,
+    pub clear_child_tid: usize,
+    pub signal_mask: u64,
 }
-impl Default for ThdCtx {
+impl Default for ThreadContext {
     fn default() -> Self {
         Self {
-            uctx: Context::new(),
-            clear_tid: 0,
-            smask: 0,
+            user_trap_frame: SimTrapFrame::zeroed(),
+            clear_child_tid: 0,
+            signal_mask: 0,
         }
     }
 }
