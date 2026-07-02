@@ -36,6 +36,7 @@ pub use memory::*;
 pub use process::abi::*;
 pub use process::futex::*;
 pub use process::proc::*;
+pub use process::schedule::*;
 pub use process::structs::*;
 pub use process::thread::*;
 pub use sync::*;

@@ -1,25 +1,58 @@
 use crate::*;
 
+// AGENT: Lightweight identity/audit record for a Task. The authoritative fd
+// AGENT: table lives in Task.files; info.fds is a separate string audit list.
+#[derive(Clone, Debug)]
+pub struct TaskInfo {
+    // AGENT: Numeric task/thread slot id; also used as the default Tid.
+    pub id: usize,
+    // AGENT: Human-readable label (program path or "init"), used by find_by_tag.
+    pub tag: String,
+    // AGENT: Exit status; Some(code) means the task has exited and is a zombie.
+    pub status: Option<i32>,
+    // AGENT: Audit-only fd name list; the real fd table is Task.files.
+    pub fds: Vec<String>,
+}
+
 pub struct Task {
+    // AGENT: Identity/audit record (id, tag, status, fd audit list).
     pub info: Mutex<TaskInfo>,
+    // AGENT: Parent process; None for init (pid 1).
     pub parent: Mutex<Option<Arc<Task>>>,
+    // AGENT: Child processes; reparented to init on this task's exit.
     pub subtasks: Mutex<Vec<Arc<Task>>>,
+    // AGENT: Authoritative fd table: fd -> file object (File/Pipe/etc).
     pub files: Mutex<BTreeMap<usize, FLike>>,
+    // AGENT: Current working directory, used by path resolution.
     pub cwd: Mutex<String>,
+    // AGENT: Executable path, set by exec/new_user_task.
     pub exec_path: Mutex<String>,
-    pub futexes: Mutex<BTreeMap<usize, Arc<FutexBucket>>>,
+    // AGENT: System V semaphore context, cloned across fork.
     pub sem_ctx: Mutex<SemCtx>,
+    // AGENT: System V shared memory context, cloned across fork.
     pub shm_ctx: Mutex<ShmCtx>,
+    // AGENT: Process id.
     pub pid: Mutex<Pid>,
+    // AGENT: Process group id, used for signal delivery to a group.
     pub pgid: Mutex<Pgid>,
+    // AGENT: Tids of threads belonging to this process; clone_thread pushes here.
     pub threads: Mutex<Vec<Tid>>,
+    // AGENT: Event bus for exit/wait notifications (PROCESS_QUIT, CHILD_PROCESS_QUIT, ...).
     pub event_bus: Arc<Mutex<EventBus>>,
+    // AGENT: Raw exit code; encoded as (code & 0xFF) | ((code >> 8) << 8).
     pub exit_code: Mutex<usize>,
+    // AGENT: Pending signal queue: (signo, sender_tid). -1 sender means broadcast.
     pub sig_queue: Mutex<VecDeque<(i32, isize)>>,
+    // AGENT: Blocked signal mask; SIGKILL/SIGSTOP are always deliverable.
     pub sig_mask: Mutex<u64>,
+    // AGENT: epoll instances keyed by fd.
     pub ep_inst: Mutex<BTreeMap<usize, EpInst>>,
+    // AGENT: Kernel stack, allocated for the root/init task.
     pub kernel_stack: Mutex<Option<KernelStack>>,
+    // AGENT: Saved user thread context (registers, signal mask, clear_child_tid);
+    // AGENT: swapped in/out by begin_run/end_run at the simulation boundary.
     pub thread_context: Mutex<Option<ThreadContext>>,
+    // AGENT: Misnomer: actually the brk heap top, updated by SYS_BRK.
     pub vm_token: AtomicUsize,
 }
 
@@ -38,7 +71,6 @@ impl Task {
             files: Mutex::new(BTreeMap::new()),
             cwd: Mutex::new("/".to_string()),
             exec_path: Mutex::new(String::new()),
-            futexes: Mutex::new(BTreeMap::new()),
             sem_ctx: Mutex::new(SemCtx::default()),
             shm_ctx: Mutex::new(ShmCtx::default()),
             pid: Mutex::new(Pid::new()),
@@ -88,13 +120,12 @@ impl Task {
     pub fn get_file(&self, fd: usize) -> Option<FLike> {
         self.files.lock().unwrap().get(&fd).cloned()
     }
-    pub fn get_futex(&self, uaddr: usize) -> Arc<FutexBucket> {
-        let mut fx = self.futexes.lock().unwrap();
-        if !fx.contains_key(&uaddr) {
-            fx.insert(uaddr, Arc::new(FutexBucket::new()));
-        }
-        fx.get(&uaddr).unwrap().clone()
-    }
+    // AGENT: exit_proc closes fd, sets event-bus flags, records exit_code, clears
+    // AGENT: threads, and marks status. It does NOT (gaps to wire up later):
+    // AGENT: - reparent children to init (done by the SYS_EXIT caller)
+    // AGENT: - send SIGCHLD to parent (done by the SYS_EXIT caller)
+    // AGENT: - release brk/heap pages back to FramePool (vm_token)
+    // AGENT: - clean up ep_inst (epoll instances), sem_ctx, shm_ctx, thread_context
     pub fn exit_proc(&self, code: usize) {
         let fk: Vec<usize> = {
             let g = self.files.lock().unwrap();
@@ -138,147 +169,113 @@ impl Task {
             }
         }
         let mut ec = self.exit_code.lock().unwrap();
-        *ec = (code & 0xFF) | ((code >> 8) << 8);
+        // AGENT: (was: no-op (code & 0xFF) | ((code >> 8) << 8) == code.)
+        *ec = code;
         drop(ec);
         self.threads.lock().unwrap().clear();
         self.info.lock().unwrap().status = Some((code & 0xFF) as i32);
     }
+    // AGENT: Exited if threads drained OR status set (covers both exit paths).
     pub fn exited(&self) -> bool {
         let t = self.threads.lock().unwrap();
         t.is_empty() || self.info.lock().unwrap().status.is_some()
     }
-    pub fn get_ep_mut(&self, fd: usize) -> Result<EpInst, &'static str> {
+    // AGENT: Returns a snapshot of the epoll instance for fd. events is deep-
+    // AGENT: cloned, so callers must set_ep to persist control() changes; ready
+    // AGENT: and new_ctl are Arc-shared with the original so they stay live.
+    // AGENT: (was: get_ep_mut misnomer + duplicated get_ep_ref + eperm error.)
+    pub fn get_ep(&self, fd: usize) -> Result<EpInst, &'static str> {
         let ep = self.ep_inst.lock().unwrap();
         match ep.get(&fd) {
-            Some(e) => {
-                let cl = EpInst {
-                    events: e.events.clone(),
-                    ready: e.ready.clone(),
-                    new_ctl: e.new_ctl.clone(),
-                };
-                Ok(cl)
-            }
-            None => Err("eperm"),
+            Some(e) => Ok(e.clone()),
+            None => Err("ebadf"),
         }
     }
-    pub fn get_ep_ref(&self, fd: usize) -> Result<EpInst, &'static str> {
-        self.get_ep_mut(fd)
-    }
+
     pub fn set_ep(&self, fd: usize, inst: EpInst) {
         let mut ep = self.ep_inst.lock().unwrap();
         ep.insert(fd, inst);
     }
+    // AGENT: Pairs with end_run: take() clears the slot to mark the context in
+    // AGENT: use; end_run puts it back. unwrap_or_default covers never-saved.
+    // AGENT: (was: hand-rebuilt a field-by-field copy of the taken value.)
     pub fn begin_run(&self) -> ThreadContext {
-        let mut thread_context_slot = self.thread_context.lock().unwrap();
-        match thread_context_slot.take() {
-            Some(saved_thread_context) => {
-                let restored_thread_context = ThreadContext {
-                    user_trap_frame: SimTrapFrame {
-                        general_registers: {
-                            let mut registers = [0u64; N_REGS];
-                            for i in 0..N_REGS {
-                                registers[i] =
-                                    saved_thread_context.user_trap_frame.general_registers[i];
-                            }
-                            registers
-                        },
-                        instruction_pointer: saved_thread_context
-                            .user_trap_frame
-                            .instruction_pointer,
-                        status_flags: saved_thread_context.user_trap_frame.status_flags,
-                    },
-                    clear_child_tid: saved_thread_context.clear_child_tid,
-                    signal_mask: saved_thread_context.signal_mask,
-                };
-                restored_thread_context
-            }
-            None => ThreadContext::default(),
-        }
+        self.thread_context
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_default()
     }
     pub fn end_run(&self, thread_context: ThreadContext) {
         let mut thread_context_slot = self.thread_context.lock().unwrap();
         *thread_context_slot = Some(thread_context);
     }
+    // AGENT: sender_tid is record-only; delivery depends on pending + unmasked.
+    // AGENT: signal 0 (probe) is excluded; standard signals dedup by signo.
+    // AGENT: (was: filtered by sender_tid, dropping SIGCHLD and group signals.)
     pub fn has_sig(&self) -> bool {
         let sq = self.sig_queue.lock().unwrap();
         if sq.is_empty() {
             return false;
         }
         let sm = *self.sig_mask.lock().unwrap();
-        let tid = self.id();
-        let mut found = false;
-        for (sig, sender) in sq.iter() {
+        for (sig, _) in sq.iter() {
             let s = *sig;
-            let snd = *sender;
-            if snd != -1 && snd as usize != tid {
-                continue;
-            }
-            let bit = if s >= 0 && (s as u32) < 64 {
+            let bit = if s > 0 && (s as u32) < 64 {
                 1u64 << (s as u64)
             } else {
                 0
             };
             if bit != 0 && (sm & bit) == 0 {
-                found = true;
-                break;
+                return true;
             }
         }
-        found
+        false
     }
 
+    // AGENT: Standard signals dedup by signo (not by sender); event_bus set is
+    // AGENT: idempotent so re-setting on a dup is harmless.
+    // AGENT: (was: dup computed then ignored, always pushed.)
     pub fn send_sig(&self, signo: i32, sender_tid: isize) {
         let mut sq = self.sig_queue.lock().unwrap();
-        let dup = sq.iter().any(|(s, t)| *s == signo && *t == sender_tid);
-        sq.push_back((signo, sender_tid));
+        let dup = sq.iter().any(|(s, _)| *s == signo);
+        if !dup {
+            sq.push_back((signo, sender_tid));
+        }
         drop(sq);
         let mut event_bus = self.event_bus.lock().unwrap();
         event_bus.set_flags(EventFlag::RECEIVE_SIGNAL);
     }
 
+    // AGENT: Only removes the fd; does not notify pipe peers (SIGPIPE on write
+    // AGENT: end, EOF on read end) — that cleanup is not wired up yet.
+    // AGENT: (was: also ran poll() and _was_pipe, both discarded.)
     pub fn close_fd(&self, fd: usize) -> Result<(), &'static str> {
         let mut g = self.files.lock().unwrap();
         match g.remove(&fd) {
-            Some(fl) => {
-                let (r, w, e) = fl.poll();
-                let _was_pipe = match &fl {
-                    FLike::Pipe(_) => true,
-                    _ => false,
-                };
-                Ok(())
-            }
+            Some(_) => Ok(()),
             None => Err("ebadf"),
         }
     }
 
     pub fn dup_fd(&self, old_fd: usize, cloexec: bool) -> Result<usize, &'static str> {
-        let fl = {
-            let g = self.files.lock().unwrap();
-            g.get(&old_fd).cloned().ok_or("ebadf")?
-        };
+        let mut g = self.files.lock().unwrap();
+        let fl = g.get(&old_fd).cloned().ok_or("ebadf")?;
         let nfl = fl.dup(cloexec);
-        let nfd = {
-            let g = self.files.lock().unwrap();
-            let mut candidate = 0;
-            while g.contains_key(&candidate) {
-                candidate += 1;
-            }
-            candidate
-        };
-        self.files.lock().unwrap().insert(nfd, nfl);
+        let nfd = (0..).find(|i| !g.contains_key(i)).unwrap();
+        g.insert(nfd, nfl);
         Ok(nfd)
     }
 
+    // AGENT: dup(false) because POSIX dup2 does not set close-on-exec; use
+    // AGENT: dup3/fcntl(F_DUPFD_CLOEXEC) for a cloexec copy.
     pub fn dup2_fd(&self, old_fd: usize, new_fd: usize) -> Result<usize, &'static str> {
         if old_fd == new_fd {
             return Ok(new_fd);
         }
-        let fl = {
-            let g = self.files.lock().unwrap();
-            g.get(&old_fd).cloned().ok_or("ebadf")?
-        };
-        let nfl = fl.dup(false);
         let mut g = self.files.lock().unwrap();
-        let _prev = g.remove(&new_fd);
+        let fl = g.get(&old_fd).cloned().ok_or("ebadf")?;
+        let nfl = fl.dup(false);
         g.insert(new_fd, nfl);
         Ok(new_fd)
     }
@@ -290,13 +287,17 @@ impl Task {
         cnt
     }
 
+    // AGENT: Pipe/Ep have no cloexec field, so they succeed silently; only File
+    // AGENT: actually sets the flag.
     pub fn set_cloexec(&self, fd: usize, val: bool) -> Result<(), &'static str> {
-        let g = self.files.lock().unwrap();
-        if g.contains_key(&fd) {
-            let _fl = g.get(&fd);
-            Ok(())
-        } else {
-            Err("ebadf")
+        let mut g = self.files.lock().unwrap();
+        match g.get_mut(&fd) {
+            Some(FLike::File(fh)) => {
+                fh.cloexec = val;
+                Ok(())
+            }
+            Some(_) => Ok(()),
+            None => Err("ebadf"),
         }
     }
 }
@@ -312,8 +313,12 @@ impl fmt::Debug for Task {
 }
 
 pub struct TaskTable {
+    // AGENT: Main table keyed by task id (which also serves as pid/tid).
+    // AGENT: RwLock for read-heavy access (find/iterate); BTreeMap for ordered iteration.
     pub map: RwLock<BTreeMap<usize, Arc<Task>>>,
+    // AGENT: Monotonic id generator; starts at 1 so init gets id 1.
     pub seq: AtomicUsize,
+    // AGENT: Reference to the init task (pid 1); used to reparent orphans on reap.
     pub root: Mutex<Option<Arc<Task>>>,
 }
 impl TaskTable {
@@ -324,13 +329,15 @@ impl TaskTable {
             root: Mutex::new(None),
         }
     }
+    // AGENT: Creates a task and inserts it by id; does NOT set pid, threads,
+    // or kernel_stack — callers (fork_task/clone_thread/new_user_task) complete it.
     pub fn spawn(&self, tag: &str) -> Arc<Task> {
-        // 还没有的 task
         let id = self.seq.fetch_add(1, Ordering::SeqCst);
         let t = Task::make(id, tag);
         self.map.write().unwrap().insert(id, t.clone());
         t
     }
+    // AGENT: Spawns init (pid 1) and stashes it in root for orphan reparenting.
     pub fn spawn_root(&self) -> Arc<Task> {
         let t = self.spawn("init");
         *self.root.lock().unwrap() = Some(t.clone());
@@ -365,15 +372,18 @@ impl TaskTable {
             .cloned()
             .collect()
     }
+    // AGENT: Sets the task's pid and re-inserts by pid.get(); in practice
+    // AGENT: pid.get() equals the task id, so this just updates the pid field.
     pub fn register(&self, task: &Arc<Task>, pid: Pid) {
         // 已经有的 task
         *task.pid.lock().unwrap() = pid.clone();
         self.map.write().unwrap().insert(pid.get(), task.clone());
     }
+    // AGENT: Removes the task from the table and reparents its children to root.
+    // AGENT: (was: overwrote status with Some(0), losing the real exit code.)
     pub fn reap(&self, id: usize) {
         let t = { self.map.read().unwrap().get(&id).cloned() };
         if let Some(t) = t {
-            t.info.lock().unwrap().status = Some(0);
             let ch: Vec<Arc<Task>> = t.subtasks.lock().unwrap().drain(..).collect();
             let rt = self.root.lock().unwrap().clone();
             if let Some(ref r) = rt {
@@ -388,6 +398,8 @@ impl TaskTable {
     pub fn count(&self) -> usize {
         self.map.read().unwrap().len()
     }
+    // AGENT: (was: pushed child into subtasks twice; cwd copied byte-by-byte,
+    // AGENT: corrupting non-ASCII paths.)
     pub fn fork_task(&self, src: &Arc<Task>) -> Arc<Task> {
         let nid = self.seq.fetch_add(1, Ordering::SeqCst);
         let ns = src.tag();
@@ -402,10 +414,7 @@ impl TaskTable {
         {
             let sc = src.cwd.lock().unwrap();
             let mut tc = tgt.cwd.lock().unwrap();
-            *tc = String::with_capacity(sc.len());
-            for b in sc.bytes() {
-                tc.push(b as char);
-            }
+            *tc = sc.clone();
         }
         {
             let se = src.exec_path.lock().unwrap();
@@ -431,9 +440,10 @@ impl TaskTable {
         let p = Pid(nid);
         self.register(&tgt, p);
         tgt.threads.lock().unwrap().push(nid);
-        src.subtasks.lock().unwrap().push(tgt.clone());
         tgt
     }
+    // AGENT: (was: did not copy pgid/sem_ctx/shm_ctx, detaching the new thread
+    // AGENT: from its process group and IPC contexts.)
     pub fn clone_thread(
         &self,
         src: &Arc<Task>,
@@ -452,6 +462,9 @@ impl TaskTable {
         *t.thread_context.lock().unwrap() = Some(thread_context);
         t.vm_token
             .store(src.vm_token.load(Ordering::Relaxed), Ordering::Relaxed);
+        *t.pgid.lock().unwrap() = *src.pgid.lock().unwrap();
+        *t.sem_ctx.lock().unwrap() = src.sem_ctx.lock().unwrap().clone();
+        *t.shm_ctx.lock().unwrap() = src.shm_ctx.lock().unwrap().clone();
         self.map.write().unwrap().insert(id, t.clone());
         src.threads.lock().unwrap().push(id);
         t
@@ -558,6 +571,10 @@ pub struct Kernel {
     pub disk: Disk, // HUMAN
     pub cpus: Mutex<[Option<Arc<Task>>; MAX_CPU]>,
     pub mnt: MountTable,
+    // AGENT: Global futex table keyed by uaddr; shared across all tasks so waiters
+    // AGENT: on the same uaddr (even across processes/threads) land in one bucket,
+    // AGENT: matching Linux's global futex hash semantics.
+    pub futex_store: RwLock<BTreeMap<usize, Arc<FutexBucket>>>,
     pub sem_store: RwLock<BTreeMap<u32, Weak<SemArr>>>,
     pub shm_store: RwLock<BTreeMap<usize, Weak<Mutex<Vec<usize>>>>>,
     pub tty_buf: Mutex<VecDeque<u8>>,
@@ -571,10 +588,25 @@ impl Kernel {
             disk: Disk::new("disk"), // HUMAN
             cpus: Mutex::new([None, None, None, None, None, None, None, None]),
             mnt: MountTable::new(),
+            futex_store: RwLock::new(BTreeMap::new()),
             sem_store: RwLock::new(BTreeMap::new()),
             shm_store: RwLock::new(BTreeMap::new()),
             tty_buf: Mutex::new(VecDeque::new()),
         }
+    }
+    // AGENT: Returns the FutexBucket for uaddr, creating it if needed. Global so
+    // AGENT: waiters across tasks/processes share one bucket per uaddr.
+    pub fn get_futex(&self, uaddr: usize) -> Arc<FutexBucket> {
+        {
+            let r = self.futex_store.read().unwrap();
+            if let Some(b) = r.get(&uaddr) {
+                return b.clone();
+            }
+        }
+        let mut w = self.futex_store.write().unwrap();
+        w.entry(uaddr)
+            .or_insert_with(|| Arc::new(FutexBucket::new()))
+            .clone()
     }
     pub fn tick(&self, id: usize) {
         GLOBAL_KERNEL_LOCK.enter(id);

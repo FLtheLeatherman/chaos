@@ -26,6 +26,7 @@ fn basic_stale_weak_upgrade() {
     let a = tt.spawn("A");
     let id_a = a.id();
     let stale_ref = a.clone();
+    a.exit_proc(0);
     tt.reap(id_a);
     let b = tt.spawn("B");
     assert_eq!(stale_ref.info.lock().unwrap().status, Some(0));

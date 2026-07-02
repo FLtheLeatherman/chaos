@@ -2,11 +2,13 @@
 pub mod abi;
 pub mod futex;
 pub mod proc;
+pub mod schedule;
 pub mod structs;
 pub mod thread;
 
 pub use self::abi::*;
 pub use self::futex::*;
 pub use self::proc::*;
+pub use self::schedule::*;
 pub use self::structs::*;
 pub use self::thread::*;
