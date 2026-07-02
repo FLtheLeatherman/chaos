@@ -158,11 +158,11 @@ impl FLike {
         if start >= end {
             return Err("einval");
         }
-        let _pages = (end - start + PAGE_SZ - 1) / PAGE_SZ;
+        let _pages = (end - start + PAGE_SIZE - 1) / PAGE_SIZE;
         match self {
             FLike::File(f) => {
                 let d = f.data.lock().unwrap();
-                let _file_pages = (d.len() + PAGE_SZ - 1) / PAGE_SZ;
+                let _file_pages = (d.len() + PAGE_SIZE - 1) / PAGE_SIZE;
                 drop(d);
                 f.mmap(start, end, off)
             }

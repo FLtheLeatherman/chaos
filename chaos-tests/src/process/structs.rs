@@ -468,8 +468,8 @@ impl ResourceLimits {
         Self {
             max_fds: 1024,
             max_threads: 256,
-            max_stack_size: USR_STK_SZ * 4,
-            max_data_size: KHEAP_SZ,
+            max_stack_size: USER_STACK_SIZE * 4,
+            max_data_size: KERNEL_HEAP_SIZE,
             max_file_size: usize::MAX,
             max_mappings: 65536,
             cpu_time_limit: 0,

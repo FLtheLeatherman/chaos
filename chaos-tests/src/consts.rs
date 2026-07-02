@@ -1,10 +1,16 @@
-pub const PAGE_SZ: usize = 4096;
+/// Base page size used by the simulated VM and frame allocator.
+pub const PAGE_SIZE: usize = 4096;
 pub const N_PROC: usize = 256;
-pub const N_FRAMES: usize = 65536;
-pub const KERN_BASE: usize = 0xFFFF_FFFF_8000_0000;
-pub const PHYS_OFF: usize = 0xFFFF_FFFF_0000_0000;
-pub const MEM_OFF: usize = 0x8000_0000;
-pub const KHEAP_SZ: usize = 0x800000;
+/// Number of simulated physical page frames.
+pub const PHYSICAL_FRAME_COUNT: usize = 65536;
+/// First kernel virtual address; user mappings must stay below this boundary.
+pub const KERNEL_OFFSET: usize = 0xFFFF_FFFF_8000_0000;
+/// Direct-map offset: kernel virtual address = physical address + PHYSICAL_MEMORY_OFFSET.
+pub const PHYSICAL_MEMORY_OFFSET: usize = 0xFFFF_FFFF_0000_0000;
+/// Simulated physical memory starts here, so PHYSICAL_MEMORY_OFFSET + MEMORY_OFFSET == KERNEL_OFFSET.
+pub const MEMORY_OFFSET: usize = 0x8000_0000;
+/// Simulated kernel heap size.
+pub const KERNEL_HEAP_SIZE: usize = 0x800000;
 pub const N_CHAINS: usize = 64;
 pub const RBUF_CAP: usize = 256;
 // AGENT: Host simulation uses a compact x86_64-ish register file; this is not
@@ -12,9 +18,12 @@ pub const RBUF_CAP: usize = 256;
 pub const N_REGS: usize = 16;
 pub const MNT_DEPTH: usize = 8;
 pub const MAX_CPU: usize = 8;
-pub const KSTK_SZ: usize = 0x4000;
-pub const USR_STK_OFF: usize = 0x7FFF_0000;
-pub const USR_STK_SZ: usize = 0x10000;
+/// Per-task simulated kernel stack size.
+pub const KSTACK_SIZE: usize = 0x4000;
+/// Bottom of the simulated user stack region.
+pub const USER_STACK_OFFSET: usize = 0x7FFF_0000;
+/// Size of the simulated user stack region.
+pub const USER_STACK_SIZE: usize = 0x10000;
 pub const USEC_PER_TICK: usize = 1000;
 pub const FOLLOW_LIM: usize = 3;
 

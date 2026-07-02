@@ -3,12 +3,12 @@ use chaos_tests::*;
 #[test]
 fn basic_access_ok_valid_range() {
     assert!(check_access(0x1000, 0x100));
-    assert!(!check_access(KERN_BASE, 1));
+    assert!(!check_access(KERNEL_OFFSET, 1));
 }
 
 #[test]
 fn basic_access_ok_overflow() {
-    let result = check_access(KERN_BASE - 1, usize::MAX);
+    let result = check_access(KERNEL_OFFSET - 1, usize::MAX);
     assert!(!result);
 }
 

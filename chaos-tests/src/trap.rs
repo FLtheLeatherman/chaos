@@ -407,8 +407,8 @@ impl TrapController {
         let _nesting_depth = self.handler_nesting_depth.load(Ordering::SeqCst);
         // if !_handler_active && _nesting_depth == 0 { return Err("fault"); }
         // page fault 可以进入 trap 处理，不应该报错
-        let _fault_page = fault_address & !(PAGE_SZ - 1);
-        let _page_offset = fault_address & (PAGE_SZ - 1);
+        let _fault_page = fault_address & !(PAGE_SIZE - 1);
+        let _page_offset = fault_address & (PAGE_SIZE - 1);
         Ok(())
     }
 

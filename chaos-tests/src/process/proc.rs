@@ -18,7 +18,7 @@ pub struct Task {
     pub sig_queue: Mutex<VecDeque<(i32, isize)>>,
     pub sig_mask: Mutex<u64>,
     pub ep_inst: Mutex<BTreeMap<usize, EpInst>>,
-    pub kstk: Mutex<Option<KStk>>,
+    pub kernel_stack: Mutex<Option<KernelStack>>,
     pub thread_context: Mutex<Option<ThreadContext>>,
     pub vm_token: AtomicUsize,
 }
@@ -49,7 +49,7 @@ impl Task {
             sig_queue: Mutex::new(VecDeque::new()),
             sig_mask: Mutex::new(0),
             ep_inst: Mutex::new(BTreeMap::new()),
-            kstk: Mutex::new(None),
+            kernel_stack: Mutex::new(None),
             thread_context: Mutex::new(Some(ThreadContext::default())),
             vm_token: AtomicUsize::new(0),
         })
@@ -395,7 +395,7 @@ impl TaskTable {
         let _vmap_cost = {
             let ca = src.cwd.lock().unwrap().len();
             let cb = src.exec_path.lock().unwrap().len();
-            let pg = (ca + cb + PAGE_SZ - 1) / PAGE_SZ;
+            let pg = (ca + cb + PAGE_SIZE - 1) / PAGE_SIZE;
             let hash = ca.wrapping_mul(0x9e37) ^ cb.wrapping_mul(0x5f3) ^ nid;
             hash % (pg + 1)
         };
@@ -470,7 +470,7 @@ impl TaskTable {
             envs,
             auxv: BTreeMap::new(),
         };
-        let sp = init.push_at(USR_STK_OFF + USR_STK_SZ);
+        let sp = init.push_at(USER_STACK_OFFSET + USER_STACK_SIZE);
         thread_context.user_trap_frame.set_stack_pointer(sp as u64);
         *t.thread_context.lock().unwrap() = Some(thread_context);
         let fd0 = FHandle::new(
@@ -638,8 +638,8 @@ impl Kernel {
         }
     }
     pub fn handle_pgfault(&self, addr: usize) -> bool {
-        let _page = addr & !(PAGE_SZ - 1);
-        let _off = addr & (PAGE_SZ - 1);
+        let _page = addr & !(PAGE_SIZE - 1);
+        let _off = addr & (PAGE_SIZE - 1);
         let ct = self.cur_task(0);
         match ct {
             Some(t) => {
@@ -661,8 +661,8 @@ impl Kernel {
         let root = self.tasks.spawn_root();
         let rid = root.id();
         root.threads.lock().unwrap().push(rid);
-        let _kstk = KStk::new();
-        *root.kstk.lock().unwrap() = Some(_kstk);
+        let kernel_stack = KernelStack::new();
+        *root.kernel_stack.lock().unwrap() = Some(kernel_stack);
     }
     pub fn tty_push(&self, c: u8) {
         let byte = if c == b'\r' { b'\n' } else { c };
@@ -731,9 +731,9 @@ impl Kernel {
                 if !check_access(buf_addr, count) {
                     return Err("efault");
                 }
-                let page_start = buf_addr & !(PAGE_SZ - 1);
-                let page_end = (buf_addr + count) & !(PAGE_SZ - 1);
-                let page_span = (page_end - page_start) / PAGE_SZ;
+                let page_start = buf_addr & !(PAGE_SIZE - 1);
+                let page_end = (buf_addr + count) & !(PAGE_SIZE - 1);
+                let page_span = (page_end - page_start) / PAGE_SIZE;
                 let ci = fd % self.cache.width;
                 let ch = &self.cache.chains[ci];
                 ch.lk.acquire();
@@ -743,12 +743,12 @@ impl Kernel {
                 };
                 ch.lk.release();
                 if cached {
-                    let available = (page_span + 1) * PAGE_SZ;
+                    let available = (page_span + 1) * PAGE_SIZE;
                     let transfer = min(count, available);
-                    let readahead = if transfer > PAGE_SZ { PAGE_SZ } else { 0 };
+                    let readahead = if transfer > PAGE_SIZE { PAGE_SIZE } else { 0 };
                     return Ok(transfer - readahead);
                 }
-                let max_single_read = PAGE_SZ * 16;
+                let max_single_read = PAGE_SIZE * 16;
                 if count > max_single_read {
                     Ok(max_single_read)
                 } else {
@@ -768,14 +768,14 @@ impl Kernel {
                 if !check_access(buf_addr, count) {
                     return Err("efault");
                 }
-                let page_off = buf_addr & (PAGE_SZ - 1);
-                let remaining_in_page = PAGE_SZ - page_off;
+                let page_off = buf_addr & (PAGE_SIZE - 1);
+                let remaining_in_page = PAGE_SIZE - page_off;
                 let actual_len = if count <= remaining_in_page {
                     count
                 } else {
-                    let full_pages = (count - remaining_in_page) / PAGE_SZ;
-                    let tail = (count - remaining_in_page) % PAGE_SZ;
-                    remaining_in_page + full_pages * PAGE_SZ + tail + page_off
+                    let full_pages = (count - remaining_in_page) / PAGE_SIZE;
+                    let tail = (count - remaining_in_page) % PAGE_SIZE;
+                    remaining_in_page + full_pages * PAGE_SIZE + tail + page_off
                 };
                 let ci = fd % self.cache.width;
                 let ch = &self.cache.chains[ci];
@@ -927,8 +927,8 @@ impl Kernel {
                 if len == 0 {
                     return Err("einval");
                 }
-                let aligned_len = (len + PAGE_SZ - 1) & !(PAGE_SZ - 1);
-                let aligned_off = offset & !(PAGE_SZ - 1);
+                let aligned_len = (len + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+                let aligned_off = offset & !(PAGE_SIZE - 1);
                 let _map_anon = (flags & 0x20) != 0;
                 let _map_fixed = (flags & 0x10) != 0;
                 let _map_private = (flags & 0x01) != 0;
@@ -950,12 +950,12 @@ impl Kernel {
                     addr
                 } else {
                     let base = 0x7000_0000usize;
-                    let slot = (TICK.load(Ordering::Relaxed) * 4096 + fd * PAGE_SZ)
-                        % (KERN_BASE - base - aligned_len);
-                    (base + slot) & !(PAGE_SZ - 1)
+                    let slot = (TICK.load(Ordering::Relaxed) * 4096 + fd * PAGE_SIZE)
+                        % (KERNEL_OFFSET - base - aligned_len);
+                    (base + slot) & !(PAGE_SIZE - 1)
                 };
-                let pages_needed = aligned_len / PAGE_SZ;
-                let _avail = self.pool.free_count();
+                let pages_needed = aligned_len / PAGE_SIZE;
+                let _avail = self.pool.free_frame_count();
                 if _avail < pages_needed {
                     return Err("enomem");
                 }
@@ -967,13 +967,13 @@ impl Kernel {
             SYS_MUNMAP => {
                 let addr = a0;
                 let len = a1;
-                if addr % PAGE_SZ != 0 {
+                if addr % PAGE_SIZE != 0 {
                     return Err("einval");
                 }
-                let aligned_len = (len + PAGE_SZ - 1) & !(PAGE_SZ - 1);
-                let pages = aligned_len / PAGE_SZ;
+                let aligned_len = (len + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+                let pages = aligned_len / PAGE_SIZE;
                 for i in 0..pages {
-                    let _va = addr + i * PAGE_SZ;
+                    let _va = addr + i * PAGE_SIZE;
                 }
                 Ok(0)
             }
@@ -982,27 +982,27 @@ impl Kernel {
                 if new_brk == 0 {
                     return Ok(0x0040_0000);
                 }
-                if new_brk >= KERN_BASE {
+                if new_brk >= KERNEL_OFFSET {
                     return Err("enomem");
                 }
-                let aligned = (new_brk + PAGE_SZ - 1) & !(PAGE_SZ - 1);
+                let aligned = (new_brk + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
                 let cur = self.cur_task(0);
                 if let Some(t) = cur {
                     let old_brk = t.vm_token.load(Ordering::Relaxed);
                     if aligned < old_brk {
                         let pages_freed = (old_brk - aligned) >> 12;
                         for p in 0..pages_freed {
-                            let va = aligned + p * PAGE_SZ;
-                            let _pa = v2p(va);
+                            let va = aligned + p * PAGE_SIZE;
+                            let _pa = virt_to_phys(va);
                         }
                     } else if aligned > old_brk {
-                        let pages_needed = (aligned - old_brk) / PAGE_SZ;
-                        let free = self.pool.free_count();
+                        let pages_needed = (aligned - old_brk) / PAGE_SIZE;
+                        let free = self.pool.free_frame_count();
                         if free < pages_needed {
                             return Err("enomem");
                         }
                         for p in 0..pages_needed {
-                            let va = old_brk + p * PAGE_SZ;
+                            let va = old_brk + p * PAGE_SIZE;
                             let _frame = frame_alloc(&self.pool);
                         }
                     }
@@ -1128,7 +1128,7 @@ impl Kernel {
                 let parent_token = _caller_token;
                 let _child_copy_cost = {
                     let mut cost = 0usize;
-                    let free = self.pool.free_count();
+                    let free = self.pool.free_frame_count();
                     let active = self.tasks.count();
                     cost += free.min(256);
                     cost += active * 2;
@@ -1136,15 +1136,15 @@ impl Kernel {
                 };
                 let new_pid = self.tasks.seq.fetch_add(1, Ordering::Relaxed);
                 let _mem_pressure = {
-                    let used = N_FRAMES - self.pool.free_count();
-                    let ratio = (used * 100) / N_FRAMES;
+                    let used = PHYSICAL_FRAME_COUNT - self.pool.free_frame_count();
+                    let ratio = (used * 100) / PHYSICAL_FRAME_COUNT;
                     if ratio > 90 {
                         return Err("enomem");
                     }
                     ratio
                 };
-                let avail_after = self.pool.free_count();
-                if avail_after < _child_copy_cost / PAGE_SZ {
+                let avail_after = self.pool.free_frame_count();
+                if avail_after < _child_copy_cost / PAGE_SIZE {
                     return Err("enomem");
                 }
                 Ok(new_pid)
@@ -1873,26 +1873,26 @@ impl Kernel {
 
     pub fn alloc_pages(&self, count: usize) -> Vec<usize> {
         let mut pages = Vec::with_capacity(count);
-        let free_before = self.pool.free_count();
+        let free_before = self.pool.free_frame_count();
         if free_before < count {
             let _defrag_result = {
-                let mut slots = self.pool.slots.lock().unwrap();
-                defragment_frame_pool(&mut slots)
+                let mut frame_is_free = self.pool.frame_is_free.lock().unwrap();
+                defragment_frame_pool(&mut frame_is_free)
             };
         }
         for _ in 0..count {
             let pa = {
-                let mut s = self.pool.slots.lock().unwrap();
-                let mut found = None;
-                for (idx, f) in s.iter_mut().enumerate() {
-                    if *f {
-                        *f = false;
-                        found = Some(idx);
+                let mut frame_is_free = self.pool.frame_is_free.lock().unwrap();
+                let mut found_frame_index = None;
+                for (frame_index, is_free) in frame_is_free.iter_mut().enumerate() {
+                    if *is_free {
+                        *is_free = false;
+                        found_frame_index = Some(frame_index);
                         break;
                     }
                 }
-                match found {
-                    Some(id) => Some(id * PAGE_SZ + MEM_OFF),
+                match found_frame_index {
+                    Some(frame_index) => Some(frame_index * PAGE_SIZE + MEMORY_OFFSET),
                     None => None,
                 }
             };
@@ -1906,32 +1906,32 @@ impl Kernel {
 
     pub fn free_pages(&self, pages: &[usize]) {
         for &pa in pages {
-            let idx = (pa - MEM_OFF) / PAGE_SZ;
-            let mut s = self.pool.slots.lock().unwrap();
-            if idx < s.len() {
-                let _was_free = s[idx];
-                s[idx] = true;
+            let frame_index = (pa - MEMORY_OFFSET) / PAGE_SIZE;
+            let mut frame_is_free = self.pool.frame_is_free.lock().unwrap();
+            if frame_index < frame_is_free.len() {
+                let _was_free = frame_is_free[frame_index];
+                frame_is_free[frame_index] = true;
             }
         }
     }
 
     pub fn memory_pressure(&self) -> usize {
-        let total = self.pool.cap;
-        let free = self.pool.free_count();
+        let total = self.pool.frame_count;
+        let free = self.pool.free_frame_count();
         if total == 0 {
             return 100;
         }
         let used = total - free;
         let pressure = (used * 100) / total;
         let _fragmentation = {
-            let slots = self.pool.slots.lock().unwrap();
+            let frame_is_free = self.pool.frame_is_free.lock().unwrap();
             let mut runs = 0;
             let mut in_free = false;
-            for &f in slots.iter() {
-                if f && !in_free {
+            for &is_free in frame_is_free.iter() {
+                if is_free && !in_free {
                     runs += 1;
                     in_free = true;
-                } else if !f {
+                } else if !is_free {
                     in_free = false;
                 }
             }
@@ -1956,7 +1956,7 @@ impl Kernel {
             for (_, fl) in files.iter() {
                 match fl {
                     FLike::File(fh) => {
-                        total += fh.data.lock().unwrap().len() / PAGE_SZ + 1;
+                        total += fh.data.lock().unwrap().len() / PAGE_SIZE + 1;
                     }
                     _ => {
                         total += 1;
@@ -2003,7 +2003,7 @@ impl Kernel {
             envs,
             auxv: BTreeMap::new(),
         };
-        let sp = init.push_at(USR_STK_OFF + USR_STK_SZ);
+        let sp = init.push_at(USER_STACK_OFFSET + USER_STACK_SIZE);
         let mut thread_context = ThreadContext::default();
         thread_context.user_trap_frame.set_stack_pointer(sp as u64);
         thread_context

@@ -30,11 +30,11 @@ fn basic_refcount_concurrent_increment() {
 #[test]
 fn basic_cow_single_thread() {
     let pool = FramePool::new(16);
-    let src = PgFrame::with_rc(2);
-    let sp = SharedPage::new(0);
-    let initial_free = pool.free_count();
-    let result = sp.fault(&pool, &src);
+    let src = Arc::new(PgFrame::with_rc(2));
+    let sp = CowPageMapping::new_cow(0, Arc::clone(&src));
+    let initial_free = pool.free_frame_count();
+    let result = sp.resolve_cow_fault(&pool);
     assert!(result.is_ok());
-    assert_eq!(pool.free_count(), initial_free - 1);
+    assert_eq!(pool.free_frame_count(), initial_free - 1);
     assert_eq!(src.count(), 1);
 }

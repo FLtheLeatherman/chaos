@@ -202,7 +202,7 @@ impl FHandle {
     pub fn advise_readahead(&self, offset: usize, len: usize) -> Result<(), &'static str> {
         let d = self.data.lock().unwrap();
         let actual_end = min(offset + len, d.len());
-        let _readahead_pages = (actual_end.saturating_sub(offset) + PAGE_SZ - 1) / PAGE_SZ;
+        let _readahead_pages = (actual_end.saturating_sub(offset) + PAGE_SIZE - 1) / PAGE_SIZE;
         Ok(())
     }
 

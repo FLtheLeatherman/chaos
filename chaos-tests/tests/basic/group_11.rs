@@ -21,15 +21,15 @@ fn basic_fork_exec_workload() {
 
     let mut frames = Vec::new();
     for _ in 0..4 {
-        if let Some(f) = kern.pool.get_inner() {
+        if let Some(f) = kern.pool.alloc_frame_index() {
             frames.push(f);
         }
     }
     assert_eq!(frames.len(), 4);
 
-    let src = PgFrame::with_rc(2);
-    let sp = SharedPage::new(frames[0]);
-    let cow_result = sp.fault(&kern.pool, &src);
+    let src = Arc::new(PgFrame::with_rc(2));
+    let sp = CowPageMapping::new_cow(frames[0], Arc::clone(&src));
+    let cow_result = sp.resolve_cow_fault(&kern.pool);
     assert!(cow_result.is_ok());
 
     let parent_guard = child.parent.lock().unwrap();
@@ -38,7 +38,7 @@ fn basic_fork_exec_workload() {
     drop(parent_guard);
 
     // 4 direct allocations + 1 from CoW fault
-    assert_eq!(kern.pool.free_count(), 59);
+    assert_eq!(kern.pool.free_frame_count(), 59);
     assert!(!GLOBAL_KERNEL_LOCK.is_held());
 }
 
@@ -88,15 +88,15 @@ fn basic_mmap_file_io_workload() {
 
     assert!(check_access(0x1000, 0x2000));
 
-    let f = pool.get_inner().unwrap();
-    let src = PgFrame::with_rc(2);
-    let sp = SharedPage::new(f);
-    let nf = sp.fault(&pool, &src);
+    let f = pool.alloc_frame_index().unwrap();
+    let src = Arc::new(PgFrame::with_rc(2));
+    let sp = CowPageMapping::new_cow(f, Arc::clone(&src));
+    let nf = sp.resolve_cow_fault(&pool);
     assert!(nf.is_ok());
 
     // 1 direct + 1 from fault
-    assert_eq!(pool.free_count(), 30);
+    assert_eq!(pool.free_frame_count(), 30);
 
-    // overflow wraps 0x1000 + usize::MAX well below KERN_BASE
+    // overflow wraps 0x1000 + usize::MAX well below KERNEL_OFFSET
     assert!(!check_access(0x1000, usize::MAX));
 }

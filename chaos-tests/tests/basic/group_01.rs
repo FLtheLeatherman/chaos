@@ -38,7 +38,7 @@ fn basic_cross_module_lock_order() {
     let done = run_with_timeout(
         move || {
             GLOBAL_KERNEL_LOCK.enter(1003);
-            p.get(1004);
+            p.alloc_frame_index_with_kernel_lock(1004);
             GLOBAL_KERNEL_LOCK.leave();
         },
         2000,
