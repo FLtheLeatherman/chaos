@@ -54,6 +54,12 @@ pub struct Task {
     pub thread_context: Mutex<Option<ThreadContext>>,
     // AGENT: Misnomer: actually the brk heap top, updated by SYS_BRK.
     pub vm_token: AtomicUsize,
+    // AGENT: Cumulative page-fault count; handle_pgfault bumps this. Used as a
+    // AGENT: working-set pressure signal (frequent faults => thrashing).
+    pub fault_count: AtomicUsize,
+    // AGENT: Snapshot of fault_count at the last schedule_tick; working_set_nice
+    // AGENT: consumes the delta so the signal reflects recent, not lifetime, faults.
+    pub last_fault_count: AtomicUsize,
 }
 
 impl Task {
@@ -84,6 +90,8 @@ impl Task {
             kernel_stack: Mutex::new(None),
             thread_context: Mutex::new(Some(ThreadContext::default())),
             vm_token: AtomicUsize::new(0),
+            fault_count: AtomicUsize::new(0),
+            last_fault_count: AtomicUsize::new(0),
         })
     }
     pub fn id(&self) -> usize {
@@ -173,6 +181,8 @@ impl Task {
         *ec = code;
         drop(ec);
         self.threads.lock().unwrap().clear();
+        self.fault_count.store(0, Ordering::Relaxed);
+        self.last_fault_count.store(0, Ordering::Relaxed);
         self.info.lock().unwrap().status = Some((code & 0xFF) as i32);
     }
     // AGENT: Exited if threads drained OR status set (covers both exit paths).
@@ -299,6 +309,20 @@ impl Task {
             Some(_) => Ok(()),
             None => Err("ebadf"),
         }
+    }
+
+    pub fn record_fault(&self) {
+        self.fault_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    // AGENT: Nice offset from recent page faults: delta since the last call, +1
+    // AGENT: per 4 faults, capped at +19. Swaps the snapshot so the signal is
+    // AGENT: per-tick. Higher nice => lower weight => less CPU.
+    pub fn working_set_nice(&self) -> i32 {
+        let now = self.fault_count.load(Ordering::Relaxed);
+        let last = self.last_fault_count.swap(now, Ordering::Relaxed);
+        let delta = now.saturating_sub(last);
+        ((delta / 4) as i32).min(19)
     }
 }
 
@@ -578,6 +602,7 @@ pub struct Kernel {
     pub sem_store: RwLock<BTreeMap<u32, Weak<SemArr>>>,
     pub shm_store: RwLock<BTreeMap<usize, Weak<Mutex<Vec<usize>>>>>,
     pub tty_buf: Mutex<VecDeque<u8>>,
+    pub runqueue: RunQueue,
 }
 impl Kernel {
     pub fn new(nf: usize) -> Self {
@@ -592,6 +617,7 @@ impl Kernel {
             sem_store: RwLock::new(BTreeMap::new()),
             shm_store: RwLock::new(BTreeMap::new()),
             tty_buf: Mutex::new(VecDeque::new()),
+            runqueue: RunQueue::new(),
         }
     }
     // AGENT: Returns the FutexBucket for uaddr, creating it if needed. Global so
@@ -675,6 +701,7 @@ impl Kernel {
         let ct = self.cur_task(0);
         match ct {
             Some(t) => {
+                t.record_fault();
                 let _vm = t.vm_token.load(Ordering::Relaxed);
                 true
             }
@@ -1002,11 +1029,7 @@ impl Kernel {
                 if addr % PAGE_SIZE != 0 {
                     return Err("einval");
                 }
-                let aligned_len = (len + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-                let pages = aligned_len / PAGE_SIZE;
-                for i in 0..pages {
-                    let _va = addr + i * PAGE_SIZE;
-                }
+                let _aligned_len = (len + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
                 Ok(0)
             }
             SYS_BRK => {
@@ -1022,11 +1045,7 @@ impl Kernel {
                 if let Some(t) = cur {
                     let old_brk = t.vm_token.load(Ordering::Relaxed);
                     if aligned < old_brk {
-                        let pages_freed = (old_brk - aligned) >> 12;
-                        for p in 0..pages_freed {
-                            let va = aligned + p * PAGE_SIZE;
-                            let _pa = virt_to_phys(va);
-                        }
+                        let _pages_freed = (old_brk - aligned) >> 12;
                     } else if aligned > old_brk {
                         let pages_needed = (aligned - old_brk) / PAGE_SIZE;
                         let free = self.pool.free_frame_count();
@@ -1754,28 +1773,15 @@ impl Kernel {
 
     pub fn schedule_tick(&self, cpu: usize) {
         do_tick(cpu);
-        let mut _needs_resched = false;
-        let mut _preempt_target: Option<usize> = None;
         if let Some(t) = self.cur_task(cpu) {
             let tid = t.id();
-            let children_count = t.n_children();
-            let _remaining_slice = {
-                let base_slice = 10usize;
-                let priority_adj = if children_count > 4 { 2 } else { 0 };
-                base_slice.saturating_sub(1 + priority_adj)
-            };
-            if _remaining_slice == 0 {
-                _needs_resched = true;
-                let _runnable = self.tasks.active_tasks();
-                if _runnable.len() > 1 {
-                    _preempt_target = _runnable.into_iter().find(|&id| id != tid);
-                }
-            }
-            let _time_in_kernel = {
-                let now = TICK.load(Ordering::Relaxed);
-                let baseline = tid.wrapping_mul(7) % 100;
-                now.saturating_sub(baseline)
-            };
+            // AGENT: working-set-aware priority: large RSS raises nice, lowering
+            // AGENT: weight so vruntime advances faster and the task gets less CPU.
+            let nice = t.working_set_nice();
+            let mut policy = SchedulePolicy::new();
+            policy.nice = nice;
+            self.runqueue.enqueue(tid, policy);
+            self.runqueue.rebalance();
         }
     }
 
