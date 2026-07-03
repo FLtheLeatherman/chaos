@@ -25,6 +25,9 @@ Cargo.lock
 # for idea
 .idea
 
+# for qoder cli
+.qoder/
+
 # for kernel module building
 # C & Rust
 modules/*/objs
